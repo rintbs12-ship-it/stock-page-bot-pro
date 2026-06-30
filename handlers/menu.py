@@ -41,6 +41,10 @@ from handlers.admin_search import (
     handle_admin_search_callback,
     handle_admin_search_message,
 )
+from handlers.scheduler import (
+    handle_scheduler_callback,
+    handle_scheduler_message,
+)
 from keyboards.buttons import (
     admin_home,
     admin_edit_menu,
@@ -518,6 +522,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("admin:search"):
         await handle_admin_search_callback(query, context)
+        return
+
+    if data.startswith("admin:scheduler"):
+        await handle_scheduler_callback(query, context)
         return
 
     if data.startswith("admin:notify"):
@@ -1351,6 +1359,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_admin(user_id) and await handle_admin_search_message(update, context):
+        return
+
+    if is_admin(user_id) and await handle_scheduler_message(update, context):
         return
 
     if await handle_order_message(update, context):

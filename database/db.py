@@ -307,6 +307,29 @@ def init_db():
     )
     """)
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS scheduled_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        job_type TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        payload TEXT NOT NULL DEFAULT '{}',
+        recurrence TEXT NOT NULL DEFAULT 'one_time',
+        next_run TEXT NOT NULL,
+        last_run TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL DEFAULT ''
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS maintenance_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task TEXT NOT NULL,
+        status TEXT NOT NULL,
+        details TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT ''
+    )
+    """)
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS broadcast_recipients (
         broadcast_id INTEGER NOT NULL,
         telegram_id INTEGER NOT NULL,
@@ -481,6 +504,14 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_recent_searches_admin "
         "ON recent_searches(admin_id, id DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_due "
+        "ON scheduled_jobs(status, next_run, id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_maintenance_runs_created "
+        "ON maintenance_runs(created_at DESC, id DESC)"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_payment_logs_action_created "
@@ -783,6 +814,131 @@ def advanced_admin_search(search_type, filters=None, page=1, per_page=10):
     ).fetchall()
     con.close()
     return columns, rows, total
+
+
+def create_scheduled_job(
+    admin_id, job_type, title, payload, recurrence, next_run
+):
+    allowed_recurrence = {"one_time", "daily", "weekly", "monthly"}
+    if recurrence not in allowed_recurrence:
+        raise ValueError("Invalid recurrence")
+    if job_type not in {
+        "announcement", "pending_payment", "pending_order",
+        "customer_followup", "custom_reminder",
+    }:
+        raise ValueError("Invalid job type")
+    datetime.fromisoformat(str(next_run))
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO scheduled_jobs (
+            admin_id, job_type, title, payload, recurrence, next_run,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        int(admin_id), str(job_type), str(title)[:120],
+        json.dumps(payload or {}, ensure_ascii=False, sort_keys=True),
+        recurrence, str(next_run),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    ))
+    job_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return job_id
+
+
+def list_scheduled_jobs(job_types=None, status="active", limit=100):
+    clauses = []
+    params = []
+    if status:
+        clauses.append("status=?")
+        params.append(status)
+    if job_types:
+        placeholders = ",".join("?" for _ in job_types)
+        clauses.append(f"job_type IN ({placeholders})")
+        params.extend(job_types)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    con = connect()
+    rows = con.execute(f"""
+        SELECT id, admin_id, job_type, title, payload, recurrence,
+               next_run, last_run, status, created_at
+        FROM scheduled_jobs{where}
+        ORDER BY next_run, id LIMIT ?
+    """, params + [int(limit)]).fetchall()
+    con.close()
+    return [
+        row[:4] + (json.loads(row[4] or "{}"),) + row[5:] for row in rows
+    ]
+
+
+def get_due_scheduled_jobs(now=None, limit=100):
+    now_text = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    rows = con.execute("""
+        SELECT id, admin_id, job_type, title, payload, recurrence,
+               next_run, last_run, status, created_at
+        FROM scheduled_jobs
+        WHERE status='active' AND next_run<=?
+        ORDER BY next_run, id LIMIT ?
+    """, (now_text, int(limit))).fetchall()
+    con.close()
+    return [
+        row[:4] + (json.loads(row[4] or "{}"),) + row[5:] for row in rows
+    ]
+
+
+def update_scheduled_job_run(job_id, last_run, next_run=None, status="active"):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE scheduled_jobs
+        SET last_run=?, next_run=COALESCE(?, next_run), status=?
+        WHERE id=? AND status='active'
+    """, (str(last_run), next_run, status, int(job_id)))
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def cancel_scheduled_job(job_id):
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        "UPDATE scheduled_jobs SET status='cancelled' "
+        "WHERE id=? AND status='active'",
+        (int(job_id),),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def add_maintenance_run(task, status, details=""):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO maintenance_runs (task, status, details, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (
+        str(task), str(status), str(details),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    ))
+    run_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return run_id
+
+
+def get_maintenance_runs(limit=20):
+    con = connect()
+    rows = con.execute("""
+        SELECT id, task, status, details, created_at
+        FROM maintenance_runs ORDER BY id DESC LIMIT ?
+    """, (int(limit),)).fetchall()
+    con.close()
+    return rows
 
 
 def add_demo_stock_if_empty():

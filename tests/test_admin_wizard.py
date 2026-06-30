@@ -39,6 +39,14 @@ from handlers.admin_search import (
     export_search_csv,
     search_home_menu,
 )
+from handlers.scheduler import (
+    _advance_time,
+    maintenance_menu,
+    process_due_jobs,
+    reminder_manager_menu,
+    scheduled_announcements_menu,
+    scheduler_menu,
+)
 from handlers.orders import (
     format_order,
     handle_admin_order_callback,
@@ -266,11 +274,101 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:notify",
                 "admin:audit",
                 "admin:search",
+                "admin:scheduler",
+                "admin:scheduler:announcements",
+                "admin:scheduler:reminders",
+                "admin:scheduler:maintenance",
                 "admin:settings",
                 "admin:backup",
                 "home",
             },
         )
+
+    def test_scheduler_persistence_recurrence_and_admin_menus(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "scheduler.db")
+            try:
+                db.init_db()
+                db.upsert_customer_profile(9001, "scheduled_customer")
+                due = "2026-06-30 08:00:00"
+                announcement_id = db.create_scheduled_job(
+                    619658883, "announcement", "Morning news",
+                    {"message": "Hello customers"}, "daily", due,
+                )
+                reminder_id = db.create_scheduled_job(
+                    619658883, "custom_reminder", "Follow up",
+                    {"target_id": 9001, "message": "Remember this"},
+                    "one_time", due,
+                )
+                self.assertEqual(
+                    {row[0] for row in db.list_scheduled_jobs()},
+                    {announcement_id, reminder_id},
+                )
+
+                bot = SimpleNamespace(send_message=AsyncMock())
+                results = asyncio.run(process_due_jobs(
+                    bot, datetime(2026, 6, 30, 9, 0, 0)
+                ))
+                self.assertEqual(len(results), 2)
+                self.assertEqual(bot.send_message.await_count, 2)
+                active = db.list_scheduled_jobs(status="active")
+                self.assertEqual(len(active), 1)
+                self.assertEqual(active[0][0], announcement_id)
+                self.assertEqual(active[0][6], "2026-07-01 08:00:00")
+                completed = db.list_scheduled_jobs(status="completed")
+                self.assertEqual(completed[0][0], reminder_id)
+
+                self.assertEqual(
+                    _advance_time(
+                        datetime(2026, 1, 31, 10, 0), "monthly"
+                    ),
+                    datetime(2026, 2, 28, 10, 0),
+                )
+                self.assertTrue(db.cancel_scheduled_job(announcement_id))
+                self.assertFalse(db.cancel_scheduled_job(announcement_id))
+
+                scheduler_callbacks = {
+                    button.callback_data
+                    for row in scheduler_menu().inline_keyboard
+                    for button in row
+                }
+                self.assertTrue({
+                    "admin:backup_auto", "admin:scheduler:announcements",
+                    "admin:scheduler:reminders",
+                    "admin:scheduler:maintenance",
+                }.issubset(scheduler_callbacks))
+                self.assertIn(
+                    "admin:scheduler:announcement_new",
+                    {
+                        button.callback_data
+                        for row in scheduled_announcements_menu([]).inline_keyboard
+                        for button in row
+                    },
+                )
+                self.assertIn(
+                    "admin:scheduler:reminder_custom",
+                    {
+                        button.callback_data
+                        for row in reminder_manager_menu([]).inline_keyboard
+                        for button in row
+                    },
+                )
+                maintenance_callbacks = {
+                    button.callback_data
+                    for row in maintenance_menu().inline_keyboard
+                    for button in row
+                }
+                self.assertTrue({
+                    "admin:scheduler:maint:cleanup",
+                    "admin:scheduler:maint:optimize",
+                    "admin:scheduler:maint:vacuum",
+                    "admin:scheduler:maint:analytics",
+                    "admin:scheduler:maint:health",
+                    "admin:scheduler:maint:daily",
+                }.issubset(maintenance_callbacks))
+            finally:
+                db.DB_PATH = old_path
 
     def test_advanced_search_persistence_filters_and_pagination(self):
         old_path = db.DB_PATH

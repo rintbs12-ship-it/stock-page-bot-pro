@@ -199,6 +199,17 @@ def admin_home():
         )],
         [InlineKeyboardButton("📜 Audit Logs", callback_data="admin:audit")],
         [InlineKeyboardButton("🔎 Advanced Search", callback_data="admin:search")],
+        [InlineKeyboardButton("🕒 Scheduler", callback_data="admin:scheduler")],
+        [InlineKeyboardButton(
+            "📢 Scheduled Announcements",
+            callback_data="admin:scheduler:announcements",
+        )],
+        [InlineKeyboardButton(
+            "🔔 Reminder Manager", callback_data="admin:scheduler:reminders"
+        )],
+        [InlineKeyboardButton(
+            "🧹 Maintenance", callback_data="admin:scheduler:maintenance"
+        )],
         [InlineKeyboardButton("⚙️ Settings", callback_data="admin:settings"),
          InlineKeyboardButton("💾 Backup Manager", callback_data="admin:backup")],
         [InlineKeyboardButton("⬅️ Back", callback_data="home")]

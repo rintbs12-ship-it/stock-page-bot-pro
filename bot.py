@@ -6,6 +6,7 @@ from config import BOT_TOKEN
 from database.db import init_db, add_demo_stock_if_empty
 from handlers.backup import run_due_auto_backup
 from handlers.notifications import notification_scheduler
+from handlers.scheduler import task_scheduler
 from health import start_health_server
 from handlers.menu import cancel, start, handle_callback, handle_text, handle_command
 from version import PRODUCT_NAME, __version__
@@ -52,13 +53,19 @@ async def run_bot(app):
             notification_task = asyncio.create_task(
                 notification_scheduler(app.bot)
             )
+            scheduler_task = asyncio.create_task(task_scheduler(app.bot))
             print(f"{PRODUCT_NAME} v{__version__} is running...")
             try:
                 await asyncio.Event().wait()
             finally:
                 notification_task.cancel()
+                scheduler_task.cancel()
                 try:
                     await notification_task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    await scheduler_task
                 except asyncio.CancelledError:
                     pass
                 if app.updater.running:
