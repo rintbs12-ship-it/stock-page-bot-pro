@@ -13,15 +13,11 @@ MENUS = [
 
 
 def main_menu(is_admin=False, language="km"):
-    new_label = "🔥 ស្តុកថ្មី" if language == "km" else "🔥 New Stock"
+    new_label = "🔥 ផុសថ្មី" if language == "km" else "🔥 New Stock"
     featured_label = "⭐ ពិសេស" if language == "km" else "⭐ Featured"
     promotion_label = "💰 ប្រូម៉ូសិន" if language == "km" else "💰 Promotion"
     contact_label = "📞 ទាក់ទង" if language == "km" else "📞 Contact"
     search_label = "🔍 ស្វែងរក Followers" if language == "km" else "🔍 Search Followers"
-    advanced_label = "🔎 ស្វែងរកកម្រិតខ្ពស់" if language == "km" else "🔎 Advanced Search"
-    favorites_label = "❤️ ចំណូលចិត្ត" if language == "km" else "❤️ Favorites"
-    trending_label = "📈 ពេញនិយម" if language == "km" else "📈 Trending"
-    filters_label = "🎯 តម្រង" if language == "km" else "🎯 Filters"
     notify_label = "🔔 ជូនដំណឹង" if language == "km" else "🔔 Notify Me"
     rows = [
         [InlineKeyboardButton(MENUS[0][0], callback_data=MENUS[0][1]),
@@ -35,10 +31,6 @@ def main_menu(is_admin=False, language="km"):
         [InlineKeyboardButton(promotion_label, callback_data="special:promotion"),
          InlineKeyboardButton(contact_label, callback_data="contact")],
         [InlineKeyboardButton(search_label, callback_data="search:start"),
-         InlineKeyboardButton(advanced_label, callback_data="advanced:home")],
-        [InlineKeyboardButton(favorites_label, callback_data="favorites:list"),
-         InlineKeyboardButton(trending_label, callback_data="trending:list")],
-        [InlineKeyboardButton(filters_label, callback_data="filters:home"),
          InlineKeyboardButton(notify_label, callback_data="notify:toggle")],
         [InlineKeyboardButton("📦 My Orders", callback_data="orders:mine")],
         [InlineKeyboardButton("🌐 Language / ភាសា", callback_data="language:choose")],

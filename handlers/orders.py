@@ -266,10 +266,12 @@ async def handle_customer_order_callback(query, context):
             },
             user_id,
         )
-        await query.message.reply_text(
-            "✅ Order cancelled." if changed else "This order can no longer be cancelled."
-        )
-        return
+        if not changed:
+            await query.message.reply_text("This order can no longer be cancelled.")
+            return None
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("✅ Order cancelled.")
+        return order[1]
 
     if data.startswith("order:accepted:"):
         changed = transition_order(

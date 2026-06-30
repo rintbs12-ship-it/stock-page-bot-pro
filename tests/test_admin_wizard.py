@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 from database import db
 from handlers import backup
 from handlers import settings
-from handlers.orders import start_order
+from handlers.orders import handle_customer_order_callback, start_order
 from handlers.menu import (
     begin_photo_upload,
     build_stock_report,
@@ -64,17 +64,18 @@ class AdminWizardTests(unittest.TestCase):
         self.assertFalse(any(value and value.startswith("admin:") for value in callbacks))
         self.assertEqual(
             [len(row) for row in menu.inline_keyboard],
-            [2, 2, 2, 2, 2, 2, 2, 2, 1, 1],
+            [2, 2, 2, 2, 2, 2, 1, 1],
         )
         self.assertTrue({
             "range:1:5", "range:6:10", "range:11:20", "range:21:30",
             "range:31:50", "range:51:100", "special:featured",
             "special:promotion", "contact", "search:start",
-            "language:choose",
-            "advanced:home", "favorites:list", "trending:list",
-            "filters:home", "notify:toggle",
+            "language:choose", "notify:toggle",
             "orders:mine",
         }.issubset(set(callbacks)))
+        self.assertTrue({
+            "advanced:home", "favorites:list", "trending:list", "filters:home",
+        }.isdisjoint(set(callbacks)))
 
     def test_admin_panel_has_all_required_actions(self):
         callbacks = {
@@ -617,6 +618,43 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_order_removes_keyboard_and_returns_stock_without_duplicate(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "cancel-order.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 900, "buyer", "$25")
+                message = SimpleNamespace(reply_text=AsyncMock())
+                query = SimpleNamespace(
+                    data=f"order:cancel:{order_id}",
+                    from_user=SimpleNamespace(id=900),
+                    message=message,
+                    edit_message_reply_markup=AsyncMock(),
+                )
+                context = SimpleNamespace(user_data={})
+
+                returned_stock_id = await handle_customer_order_callback(
+                    query,
+                    context,
+                )
+
+                self.assertEqual(returned_stock_id, stock_id)
+                self.assertEqual(db.get_order(order_id)[5], "cancelled")
+                self.assertEqual(len(db.get_customer_orders(900)), 1)
+                query.edit_message_reply_markup.assert_awaited_once_with(
+                    reply_markup=None
+                )
+                message.reply_text.assert_awaited_once_with(
+                    "✅ Order cancelled."
+                )
+            finally:
+                db.DB_PATH = old_path
+
     async def test_buy_starts_order_and_shows_payment_screen(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:

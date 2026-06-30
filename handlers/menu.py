@@ -479,7 +479,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "orders:mine" or data.startswith("order:"):
-        await handle_customer_order_callback(query, context)
+        cancelled_stock_id = await handle_customer_order_callback(query, context)
+        if cancelled_stock_id:
+            row = get_stock(cancelled_stock_id)
+            if row:
+                await query.message.reply_text(
+                    customer_stock_text(row, language),
+                    reply_markup=stock_detail(
+                        row[0],
+                        row[7],
+                        language,
+                        is_admin(uid),
+                        is_favorite(uid, row[0]),
+                        is_notification_subscriber(uid),
+                    ),
+                    disable_web_page_preview=True,
+                )
         return
 
     if data.startswith("range:"):
