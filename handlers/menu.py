@@ -328,7 +328,7 @@ def customer_stock_text(row, language):
             "🔄 Ready to Transfer" if ready_transfer else "❌ Not Ready to Transfer",
             "🏢 Business Ready" if business_ready else "❌ Not Business Ready",
         ]
-        return (
+        detail = (
             f"{stock_icon} Stock #{stock_id}\n\n"
             f"👥 Followers : {followers}K\n"
             f"🌍 Country : {country}\n"
@@ -337,12 +337,12 @@ def customer_stock_text(row, language):
             f"💵 Price : {price}\n"
             f"🟢 Quality : {quality_percent}%\n"
             f"{status_icon} Status : {status_text}\n\n"
-            f"{separator}\n\n" if separator else ""
-            +
-            + "\n".join(benefits)
-            + (f"\n\n{separator}\n\n" if separator else "\n\n")
-            f"🔗 Facebook Page\n{fb_link}"
         )
+        detail += f"{separator}\n\n" if separator else ""
+        detail += "\n".join(benefits)
+        detail += f"\n\n{separator}\n\n" if separator else "\n\n"
+        detail += f"🔗 Facebook Page\n{fb_link}"
+        return detail
     benefits = [
         "✅ Followers ពិត" if real_followers else "❌ Followers មិនពិត",
         f"{'🟢' if organic_reach == 'high' else '🟡' if organic_reach == 'medium' else '🔴'} "
@@ -352,7 +352,7 @@ def customer_stock_text(row, language):
         "🔄 ត្រៀមផ្ទេរសិទ្ធិ" if ready_transfer else "❌ មិនទាន់ត្រៀមផ្ទេរសិទ្ធិ",
         "🏢 សាកសមសម្រាប់អាជីវកម្ម" if business_ready else "❌ មិនសាកសមសម្រាប់អាជីវកម្ម",
     ]
-    return (
+    detail = (
         f"{stock_icon} Stock #{stock_id}\n\n"
         f"👥 Followers : {followers}K\n"
         f"🌍 Country : {country}\n"
@@ -361,11 +361,12 @@ def customer_stock_text(row, language):
         f"💵 Price : {price}\n"
         f"🟢 គុណភាព : {quality_percent}%\n"
         f"{status_icon} Status : {status_text}\n\n"
-        (f"{separator}\n\n" if separator else "")
-        + "\n".join(benefits)
-        + (f"\n\n{separator}\n\n" if separator else "\n\n")
-        f"🔗 Facebook Page\n{fb_link}"
     )
+    detail += f"{separator}\n\n" if separator else ""
+    detail += "\n".join(benefits)
+    detail += f"\n\n{separator}\n\n" if separator else "\n\n"
+    detail += f"🔗 Facebook Page\n{fb_link}"
+    return detail
 
 
 def format_price(value):
