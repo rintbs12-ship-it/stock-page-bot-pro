@@ -149,10 +149,16 @@ def main():
         LOGGER.warning("Auto backup skipped: %s", exc)
     app = build_application()
     try:
-        app.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            bootstrap_retries=-1,
-        )
+        # Python 3.14 no longer creates a MainThread event loop implicitly.
+        # PTB 22.3's synchronous run_polling() expects a current, non-running
+        # loop and remains the sole owner of the application polling lifecycle.
+        with asyncio.Runner() as runner:
+            runner.get_loop()
+            app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                bootstrap_retries=-1,
+                close_loop=False,
+            )
     except KeyboardInterrupt:
         LOGGER.info("Stock Page Bot stopped")
     except Exception:

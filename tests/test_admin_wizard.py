@@ -6,9 +6,10 @@ import io
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 from telegram.error import Forbidden, TelegramError
 
+import bot
 from database import db
 from handlers import backup
 from handlers import settings
@@ -93,6 +94,28 @@ from health import start_health_server
 
 
 class AdminWizardTests(unittest.TestCase):
+    def test_production_main_provides_ptb_22_current_event_loop(self):
+        app = SimpleNamespace(run_polling=Mock())
+
+        def verify_polling_loop(**kwargs):
+            loop = asyncio.get_event_loop()
+            self.assertFalse(loop.is_running())
+            self.assertFalse(kwargs["close_loop"])
+
+        app.run_polling.side_effect = verify_polling_loop
+        with (
+            patch.object(bot, "init_db"),
+            patch.object(bot, "verify_database", return_value={
+                "integrity": "ok", "foreign_key_errors": [],
+            }),
+            patch.object(bot, "add_demo_stock_if_empty"),
+            patch.object(bot, "run_due_auto_backup", return_value=None),
+            patch.object(bot, "build_application", return_value=app),
+        ):
+            bot.main()
+
+        app.run_polling.assert_called_once()
+
     def _create_analytics_fixture(self):
         db.init_db()
         first_stock = db.create_stock(
