@@ -2,10 +2,11 @@ import unittest
 import tempfile
 import zipfile
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from telegram.error import Forbidden, TelegramError
 
 from database import db
 from handlers import backup
@@ -13,6 +14,12 @@ from handlers import settings
 from handlers.customers import (
     handle_crm_callback,
     profile_text,
+)
+from handlers.notifications import (
+    delivery_report_text,
+    execute_broadcast,
+    handle_notification_callback,
+    process_due_broadcasts,
 )
 from handlers.orders import (
     format_order,
@@ -117,6 +124,7 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:analytics",
                 "admin:order_manager",
                 "admin:customers",
+                "admin:notify",
                 "admin:settings",
                 "admin:backup",
                 "home",
@@ -822,6 +830,33 @@ class AdminWizardTests(unittest.TestCase):
             finally:
                 db.DB_PATH = old_path
 
+    def test_broadcast_audiences_exclude_banned_customers(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "broadcast-audiences.db")
+            try:
+                db.init_db()
+                for user_id in (700, 701, 702):
+                    db.upsert_customer_profile(user_id, f"user{user_id}")
+                db.toggle_customer_flag(701, "is_vip")
+                db.toggle_customer_flag(702, "is_banned")
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                db.create_order(stock_id, 700, "user700", "$25")
+                self.assertEqual(
+                    db.get_broadcast_recipients("all"), [700, 701]
+                )
+                self.assertEqual(
+                    db.get_broadcast_recipients("vip"), [701]
+                )
+                self.assertEqual(
+                    db.get_broadcast_recipients("orders"), [700]
+                )
+            finally:
+                db.DB_PATH = old_path
+
     def test_order_manager_has_workflow_search_and_filter_actions(self):
         manager_callbacks = {
             button.callback_data
@@ -1045,6 +1080,109 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_broadcast_delivery_report_and_history_are_saved(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "broadcast-delivery.db")
+            try:
+                db.init_db()
+                for user_id in (700, 701, 702):
+                    db.upsert_customer_profile(user_id, f"user{user_id}")
+                broadcast_id = db.create_broadcast(
+                    619658883, "all", "Hello customers"
+                )
+                bot = SimpleNamespace(send_message=AsyncMock(
+                    side_effect=[
+                        None,
+                        Forbidden("bot blocked"),
+                        TelegramError("delivery failed"),
+                    ]
+                ))
+                result = await execute_broadcast(bot, broadcast_id)
+                self.assertEqual(result[6:10], (3, 1, 1, 1))
+                self.assertIn(
+                    "Total Customers: 3", delivery_report_text(result)
+                )
+                self.assertEqual(
+                    db.get_broadcast_history(1)[0][0], broadcast_id
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_vip_and_order_customer_broadcast_delivery(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "broadcast-groups.db")
+            try:
+                db.init_db()
+                db.upsert_customer_profile(700, "buyer")
+                db.upsert_customer_profile(701, "vip")
+                db.toggle_customer_flag(701, "is_vip")
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                db.create_order(stock_id, 700, "buyer", "$25")
+                bot = SimpleNamespace(send_message=AsyncMock())
+                vip_id = db.create_broadcast(
+                    619658883, "vip", "VIP promotion"
+                )
+                order_id = db.create_broadcast(
+                    619658883, "orders", "Order customer news"
+                )
+                vip_result = await execute_broadcast(bot, vip_id)
+                order_result = await execute_broadcast(bot, order_id)
+                self.assertEqual(vip_result[6:10], (1, 1, 0, 0))
+                self.assertEqual(order_result[6:10], (1, 1, 0, 0))
+                sent_ids = [
+                    call.kwargs["chat_id"]
+                    for call in bot.send_message.await_args_list
+                ]
+                self.assertEqual(sent_ids, [701, 700])
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_scheduled_broadcast_runs_when_due(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "scheduled-broadcast.db")
+            try:
+                db.init_db()
+                db.upsert_customer_profile(700, "buyer")
+                scheduled = datetime.now() + timedelta(hours=1)
+                broadcast_id = db.create_broadcast(
+                    619658883,
+                    "all",
+                    "Scheduled message",
+                    scheduled_at=scheduled.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                self.assertEqual(db.get_due_broadcasts(datetime.now()), [])
+                bot = SimpleNamespace(send_message=AsyncMock())
+                results = await process_due_broadcasts(
+                    bot, scheduled + timedelta(minutes=1)
+                )
+                self.assertEqual(results[0][0], broadcast_id)
+                self.assertEqual(results[0][12], "completed")
+                bot.send_message.assert_awaited_once_with(
+                    chat_id=700, text="Scheduled message"
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_non_admin_cannot_access_notification_center(self):
+        query = SimpleNamespace(
+            data="admin:notify",
+            from_user=SimpleNamespace(id=700),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        context = SimpleNamespace(user_data={})
+        self.assertTrue(
+            await handle_notification_callback(query, context)
+        )
+        self.assertIn(
+            "Admin only", query.message.reply_text.await_args.args[0]
+        )
+
     async def test_banned_customer_cannot_create_order(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:

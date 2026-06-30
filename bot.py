@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from config import BOT_TOKEN
 from database.db import init_db, add_demo_stock_if_empty
 from handlers.backup import run_due_auto_backup
+from handlers.notifications import notification_scheduler
 from health import start_health_server
 from handlers.menu import cancel, start, handle_callback, handle_text, handle_command
 from version import PRODUCT_NAME, __version__
@@ -32,7 +33,8 @@ def build_application():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(
-        filters.PHOTO | filters.Document.ALL | (filters.TEXT & ~filters.COMMAND),
+        filters.PHOTO | filters.VIDEO | filters.Document.ALL
+        | (filters.TEXT & ~filters.COMMAND),
         handle_text,
     ))
     app.add_error_handler(handle_error)
@@ -47,10 +49,18 @@ async def run_bot(app):
         async with app:
             await app.updater.start_polling(allowed_updates=None)
             await app.start()
+            notification_task = asyncio.create_task(
+                notification_scheduler(app.bot)
+            )
             print(f"{PRODUCT_NAME} v{__version__} is running...")
             try:
                 await asyncio.Event().wait()
             finally:
+                notification_task.cancel()
+                try:
+                    await notification_task
+                except asyncio.CancelledError:
+                    pass
                 if app.updater.running:
                     await app.updater.stop()
                 if app.running:

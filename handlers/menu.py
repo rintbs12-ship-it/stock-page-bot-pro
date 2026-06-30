@@ -27,6 +27,10 @@ from handlers.customers import (
     handle_customer_profile_callback,
     handle_customer_profile_message,
 )
+from handlers.notifications import (
+    handle_notification_callback,
+    handle_notification_message,
+)
 from keyboards.buttons import (
     admin_home,
     admin_edit_menu,
@@ -492,6 +496,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
+
+    if data.startswith("admin:notify"):
+        await handle_notification_callback(query, context)
+        return
 
     if data.startswith(("admin:customers", "admin:customer:")):
         await handle_crm_callback(query, context)
@@ -1274,6 +1282,11 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     language = get_user_language(user_id)
+
+    # Broadcast documents must be consumed before the Backup restore handler.
+    if is_admin(user_id) and await handle_notification_message(update, context):
+        return
+
     if getattr(update.message, "document", None):
         if not is_admin(user_id):
             await update.message.reply_text("⛔ Admin only")

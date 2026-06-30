@@ -244,6 +244,34 @@ def init_db():
         updated_at TEXT DEFAULT ''
     )
     """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS broadcasts (
+        broadcast_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        type TEXT NOT NULL DEFAULT 'all',
+        message TEXT DEFAULT '',
+        media_type TEXT DEFAULT 'text',
+        media_file_id TEXT DEFAULT '',
+        total_sent INTEGER DEFAULT 0,
+        success INTEGER DEFAULT 0,
+        failed INTEGER DEFAULT 0,
+        blocked INTEGER DEFAULT 0,
+        duration REAL DEFAULT 0,
+        scheduled_at TEXT DEFAULT '',
+        status TEXT DEFAULT 'draft',
+        created_at TEXT DEFAULT ''
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS broadcast_recipients (
+        broadcast_id INTEGER NOT NULL,
+        telegram_id INTEGER NOT NULL,
+        PRIMARY KEY (broadcast_id, telegram_id),
+        FOREIGN KEY(broadcast_id) REFERENCES broadcasts(broadcast_id)
+            ON DELETE CASCADE
+    )
+    """)
     required_customer_columns = {
         "username": "TEXT DEFAULT ''",
         "first_name": "TEXT DEFAULT ''",
@@ -367,6 +395,10 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_customer_profiles_facebook "
         "ON customer_profiles(facebook_profile_link)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_broadcasts_schedule "
+        "ON broadcasts(status, scheduled_at)"
     )
 
     con.commit()
@@ -1329,6 +1361,157 @@ def toggle_customer_flag(telegram_id, field):
 def is_customer_banned(telegram_id):
     profile = get_customer_profile(telegram_id)
     return bool(profile and profile[12])
+
+
+def get_broadcast_recipients(audience, selected_ids=None):
+    con = connect()
+    if audience == "vip":
+        rows = con.execute("""
+            SELECT telegram_id FROM customer_profiles
+            WHERE is_banned=0 AND is_vip=1 ORDER BY telegram_id
+        """).fetchall()
+    elif audience == "orders":
+        rows = con.execute("""
+            SELECT telegram_id FROM customer_profiles
+            WHERE is_banned=0 AND total_orders>0 ORDER BY telegram_id
+        """).fetchall()
+    elif audience == "selected":
+        selected = tuple({
+            int(value) for value in (selected_ids or [])
+            if str(value).lstrip("-").isdigit()
+        })
+        if not selected:
+            con.close()
+            return []
+        placeholders = ",".join("?" for _ in selected)
+        rows = con.execute(
+            f"SELECT telegram_id FROM customer_profiles "
+            f"WHERE is_banned=0 AND telegram_id IN ({placeholders}) "
+            "ORDER BY telegram_id",
+            selected,
+        ).fetchall()
+    else:
+        rows = con.execute("""
+            SELECT telegram_id FROM customer_profiles
+            WHERE is_banned=0 ORDER BY telegram_id
+        """).fetchall()
+    con.close()
+    return [row[0] for row in rows]
+
+
+def create_broadcast(
+    admin_id, audience, message, media_type="text", media_file_id="",
+    scheduled_at="", selected_ids=None,
+):
+    if audience not in {"all", "vip", "orders", "selected"}:
+        return None
+    if media_type not in {"text", "photo", "video", "document"}:
+        return None
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status = "scheduled" if scheduled_at else "pending"
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO broadcasts (
+            admin_id, type, message, media_type, media_file_id,
+            scheduled_at, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        admin_id, audience, message or "", media_type,
+        media_file_id or "", scheduled_at or "", status, now,
+    ))
+    broadcast_id = cur.lastrowid
+    if audience == "selected":
+        recipients = get_broadcast_recipients("selected", selected_ids)
+        cur.executemany("""
+            INSERT OR IGNORE INTO broadcast_recipients (
+                broadcast_id, telegram_id
+            ) VALUES (?, ?)
+        """, ((broadcast_id, telegram_id) for telegram_id in recipients))
+    con.commit()
+    con.close()
+    return broadcast_id
+
+
+def get_broadcast(broadcast_id):
+    con = connect()
+    row = con.execute("""
+        SELECT broadcast_id, admin_id, type, message, media_type,
+               media_file_id, total_sent, success, failed, blocked,
+               duration, scheduled_at, status, created_at
+        FROM broadcasts WHERE broadcast_id=?
+    """, (broadcast_id,)).fetchone()
+    con.close()
+    return row
+
+
+def get_saved_broadcast_recipients(broadcast_id):
+    con = connect()
+    rows = con.execute("""
+        SELECT telegram_id FROM broadcast_recipients
+        WHERE broadcast_id=? ORDER BY telegram_id
+    """, (broadcast_id,)).fetchall()
+    con.close()
+    return [row[0] for row in rows]
+
+
+def complete_broadcast(
+    broadcast_id, total_sent, success, failed, blocked, duration,
+):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE broadcasts
+        SET total_sent=?, success=?, failed=?, blocked=?,
+            duration=?, status='completed'
+        WHERE broadcast_id=? AND status IN ('pending', 'sending', 'scheduled')
+    """, (
+        total_sent, success, failed, blocked, float(duration), broadcast_id,
+    ))
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def mark_broadcast_sending(broadcast_id):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE broadcasts SET status='sending'
+        WHERE broadcast_id=? AND status IN ('pending', 'scheduled')
+    """, (broadcast_id,))
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def get_due_broadcasts(now=None):
+    now_text = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    rows = con.execute("""
+        SELECT broadcast_id, admin_id, type, message, media_type,
+               media_file_id, total_sent, success, failed, blocked,
+               duration, scheduled_at, status, created_at
+        FROM broadcasts
+        WHERE status='scheduled' AND scheduled_at<=?
+        ORDER BY scheduled_at, broadcast_id
+    """, (now_text,)).fetchall()
+    con.close()
+    return rows
+
+
+def get_broadcast_history(limit=20):
+    con = connect()
+    rows = con.execute("""
+        SELECT broadcast_id, admin_id, type, message, media_type,
+               media_file_id, total_sent, success, failed, blocked,
+               duration, scheduled_at, status, created_at
+        FROM broadcasts ORDER BY broadcast_id DESC LIMIT ?
+    """, (limit,)).fetchall()
+    con.close()
+    return rows
 
 
 def get_customer_orders(customer_id, limit=20):
