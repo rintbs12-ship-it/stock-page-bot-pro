@@ -483,6 +483,7 @@ class AdminWizardTests(unittest.TestCase):
                     "admin:settings_country", "admin:settings_quality",
                     "admin:settings_admins", "admin:settings_announcement",
                     "admin:settings_menu",
+                    "admin:settings_theme",
                     "admin:home",
                 })
             finally:
@@ -564,6 +565,57 @@ class AdminWizardTests(unittest.TestCase):
                 self.assertEqual(reset_new[1:3], ("🔥", "ផុសថ្មី"))
                 self.assertEqual(reset_new[5:], (1, 10))
                 self.assertEqual(reset_contact[5], 1)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_theme_settings_apply_immediately_to_welcome_menu_and_stock_card(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "theme.db")
+            try:
+                db.init_db()
+                db.set_setting("theme_welcome_emoji", "🚀")
+                db.set_setting("theme_store_title", "Rocket Store")
+                db.set_setting("theme_welcome_text", "Welcome aboard!")
+                db.set_setting("theme_footer_text", "Thank you.")
+                db.set_setting("theme_separator", "══════════════")
+                welcome = get_welcome_text("en")
+                self.assertIn("🚀 Rocket Store", welcome)
+                self.assertIn("Welcome aboard!", welcome)
+                self.assertIn("══════════════\nThank you.", welcome)
+
+                db.set_setting("theme_menu_style", "minimal")
+                minimal = main_menu(False, "en")
+                self.assertTrue(all(len(row) == 1 for row in minimal.inline_keyboard))
+                db.set_setting("theme_menu_style", "classic")
+                classic = main_menu(False, "en")
+                self.assertEqual(
+                    [len(row) for row in classic.inline_keyboard[:3]],
+                    [2, 2, 2],
+                )
+                self.assertTrue(all(
+                    len(row) == 1 for row in classic.inline_keyboard[3:]
+                ))
+
+                db.set_setting(
+                    "theme_stock_card_template",
+                    "🪪 Stock #{id}\nPrice: {price}\nFollowers: {followers}K",
+                )
+                row = (
+                    7, 15, "Cambodia", "female", "$25", "95%", "",
+                    "https://fb.test", "available", 0, 0, "",
+                    55, 45, 95, 1, "high", 1, 1, 1, 1,
+                )
+                self.assertEqual(
+                    customer_stock_text(row, "en"),
+                    "🪪 Stock #7\nPrice: $25\nFollowers: 15K",
+                )
+
+                db.set_setting("theme_stock_card_template", "")
+                db.set_setting("theme_separator", "")
+                detail = customer_stock_text(row, "en")
+                self.assertNotIn("━━━━━━━━", detail)
+                self.assertNotIn("════════", detail)
             finally:
                 db.DB_PATH = old_path
 

@@ -1,4 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from string import Formatter
 
 from config import FACEBOOK_CONTACT, TELEGRAM_CONTACT
 from database.db import (
@@ -33,6 +34,7 @@ def settings_menu():
         [InlineKeyboardButton("👑 Admin Manager", callback_data="admin:settings_admins")],
         [InlineKeyboardButton("📢 Announcement", callback_data="admin:settings_announcement")],
         [InlineKeyboardButton("🎨 Menu Editor", callback_data="admin:settings_menu")],
+        [InlineKeyboardButton("🎨 Theme Editor", callback_data="admin:settings_theme")],
         [InlineKeyboardButton("⬅ Back", callback_data="admin:home")],
     ])
 
@@ -162,6 +164,73 @@ def menu_item_editor_text(item):
     )
 
 
+def theme_editor_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👋 Welcome Emoji", callback_data="admin:settings_theme_edit:theme_welcome_emoji")],
+        [InlineKeyboardButton("🏪 Store Title", callback_data="admin:settings_theme_edit:theme_store_title")],
+        [InlineKeyboardButton("📝 Welcome Text", callback_data="admin:settings_theme_edit:theme_welcome_text")],
+        [InlineKeyboardButton("🔻 Footer Text", callback_data="admin:settings_theme_edit:theme_footer_text")],
+        [InlineKeyboardButton("🎛 Menu Style", callback_data="admin:settings_theme_style")],
+        [InlineKeyboardButton("➖ Separator", callback_data="admin:settings_theme_separator")],
+        [InlineKeyboardButton("✨ Message Icons", callback_data="admin:settings_theme_icons")],
+        [InlineKeyboardButton("🪪 Stock Card Template", callback_data="admin:settings_theme_stock_card")],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:settings")],
+    ])
+
+
+def theme_style_menu():
+    current = get_setting("theme_menu_style", "modern")
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"{'✅ ' if current == value else ''}{label}",
+            callback_data=f"admin:settings_theme_style_set:{value}",
+        )]
+        for value, label in (
+            ("minimal", "Minimal"),
+            ("classic", "Classic"),
+            ("modern", "Modern"),
+        )
+    ] + [[InlineKeyboardButton("⬅ Back", callback_data="admin:settings_theme")]])
+
+
+def theme_separator_menu():
+    current = get_setting("theme_separator", "━━━━━━━━━━━━━━━━━━")
+    choices = [
+        ("heavy", "━━━━━━━━━━━━━━"),
+        ("light", "──────────────"),
+        ("double", "══════════════"),
+        ("none", ""),
+    ]
+    rows = [[InlineKeyboardButton(
+        f"{'✅ ' if current == value else ''}{label}",
+        callback_data=f"admin:settings_theme_separator_set:{key}",
+    )] for key, value in choices for label in [value or "Disable separators"]]
+    rows.append([InlineKeyboardButton("⬅ Back", callback_data="admin:settings_theme")])
+    return InlineKeyboardMarkup(rows)
+
+
+def theme_icons_menu():
+    icons = [
+        ("stock", "📦"), ("new", "🔥"), ("featured", "⭐"),
+        ("promotion", "💰"), ("contact", "📞"), ("language", "🌐"),
+        ("admin", "👑"), ("notify", "🔔"),
+    ]
+    rows = []
+    for key, default in icons:
+        menu_item = get_menu_item(key)
+        current_icon = (
+            menu_item[1]
+            if menu_item
+            else get_setting(f"theme_icon_{key}", default)
+        )
+        rows.append([InlineKeyboardButton(
+            f"{current_icon} {key.title()}",
+            callback_data=f"admin:settings_theme_icon:{key}",
+        )])
+    rows.append([InlineKeyboardButton("⬅ Back", callback_data="admin:settings_theme")])
+    return InlineKeyboardMarkup(rows)
+
+
 def _begin_text_edit(context, key):
     context.user_data.clear()
     context.user_data.update({
@@ -183,6 +252,121 @@ async def handle_settings_callback(query, context):
 
     if data == "admin:settings":
         await query.edit_message_text(settings_summary(), reply_markup=settings_menu())
+        return
+
+    if data == "admin:settings_theme":
+        await query.edit_message_text(
+            "🎨 Theme Editor\n\nCustomize the customer experience:",
+            reply_markup=theme_editor_menu(),
+        )
+        return
+
+    if data.startswith("admin:settings_theme_edit:"):
+        key = data.rsplit(":", 1)[1]
+        allowed = {
+            "theme_welcome_emoji", "theme_store_title",
+            "theme_welcome_text", "theme_footer_text",
+        }
+        if key not in allowed:
+            return
+        context.user_data.clear()
+        context.user_data.update({
+            "admin_mode": "settings_theme_text",
+            "theme_key": key,
+        })
+        await query.edit_message_text(
+            f"Current value:\n{get_setting(key, '') or 'Not set'}\n\n"
+            f"Send the new {key.replace('theme_', '').replace('_', ' ')}.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅ Back", callback_data="admin:settings_theme")
+            ]]),
+        )
+        return
+
+    if data == "admin:settings_theme_style":
+        await query.edit_message_text(
+            "🎛 Choose Menu Style",
+            reply_markup=theme_style_menu(),
+        )
+        return
+
+    if data.startswith("admin:settings_theme_style_set:"):
+        style = data.rsplit(":", 1)[1]
+        if style not in {"minimal", "classic", "modern"}:
+            return
+        set_setting("theme_menu_style", style)
+        await query.edit_message_text(
+            f"✅ Menu Style: {style.title()}",
+            reply_markup=theme_style_menu(),
+        )
+        return
+
+    if data == "admin:settings_theme_separator":
+        await query.edit_message_text(
+            "➖ Choose Separator",
+            reply_markup=theme_separator_menu(),
+        )
+        return
+
+    if data.startswith("admin:settings_theme_separator_set:"):
+        separator_key = data.rsplit(":", 1)[1]
+        separators = {
+            "heavy": "━━━━━━━━━━━━━━",
+            "light": "──────────────",
+            "double": "══════════════",
+            "none": "",
+        }
+        if separator_key not in separators:
+            return
+        set_setting("theme_separator", separators[separator_key])
+        await query.edit_message_text(
+            "✅ Separator updated.",
+            reply_markup=theme_separator_menu(),
+        )
+        return
+
+    if data == "admin:settings_theme_icons":
+        await query.edit_message_text(
+            "✨ Message Icons\n\nSelect an icon to edit:",
+            reply_markup=theme_icons_menu(),
+        )
+        return
+
+    if data.startswith("admin:settings_theme_icon:"):
+        icon_key = data.rsplit(":", 1)[1]
+        allowed = {
+            "stock", "new", "featured", "promotion",
+            "contact", "language", "admin", "notify",
+        }
+        if icon_key not in allowed:
+            return
+        context.user_data.clear()
+        context.user_data.update({
+            "admin_mode": "settings_theme_icon",
+            "theme_icon_key": icon_key,
+        })
+        await query.edit_message_text(
+            f"Send the new emoji for {icon_key.title()}.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅ Back", callback_data="admin:settings_theme_icons")
+            ]]),
+        )
+        return
+
+    if data == "admin:settings_theme_stock_card":
+        context.user_data.clear()
+        context.user_data["admin_mode"] = "settings_theme_stock_card"
+        await query.edit_message_text(
+            "🪪 Send the Stock Card Template.\n\n"
+            "Available placeholders:\n"
+            "{id} {followers} {country} {audience}\n"
+            "{female_percent} {male_percent} {price}\n"
+            "{quality} {status} {facebook_link}\n\n"
+            "Send - to restore the standard stock card.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅ Back", callback_data="admin:settings_theme")
+            ]]),
+        )
         return
 
     if data == "admin:settings_menu":
@@ -456,6 +640,94 @@ async def handle_settings_callback(query, context):
 
 async def handle_settings_message(update, context):
     mode = context.user_data.get("admin_mode")
+    if mode == "settings_theme_text":
+        if not update.message.text:
+            await update.message.reply_text("Please send text.")
+            return True
+        key = context.user_data["theme_key"]
+        value = update.message.text.strip()
+        if key == "theme_welcome_emoji":
+            if any(character.isspace() for character in value) or not 1 <= len(value) <= 8:
+                await update.message.reply_text("Send one emoji (maximum 8 characters).")
+                return True
+        elif key == "theme_store_title":
+            if "\n" in value or not 1 <= len(value) <= 60:
+                await update.message.reply_text("Store title must be one line and 1–60 characters.")
+                return True
+        elif len(value) > 1000:
+            await update.message.reply_text("Text must be 1000 characters or fewer.")
+            return True
+        if value == "-":
+            value = ""
+        set_setting(key, value)
+        context.user_data.clear()
+        await update.message.reply_text(
+            "✅ Theme updated.",
+            reply_markup=theme_editor_menu(),
+        )
+        return True
+
+    if mode == "settings_theme_icon":
+        if not update.message.text:
+            await update.message.reply_text("Please send one emoji.")
+            return True
+        value = update.message.text.strip()
+        if any(character.isspace() for character in value) or not 1 <= len(value) <= 8:
+            await update.message.reply_text("Send one emoji (maximum 8 characters).")
+            return True
+        icon_key = context.user_data["theme_icon_key"]
+        set_setting(f"theme_icon_{icon_key}", value)
+        if icon_key in {
+            "new", "featured", "promotion", "contact", "language", "notify",
+        }:
+            update_menu_item(icon_key, "emoji", value)
+        context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ {icon_key.title()} icon updated.",
+            reply_markup=theme_icons_menu(),
+        )
+        return True
+
+    if mode == "settings_theme_stock_card":
+        if not update.message.text:
+            await update.message.reply_text("Please send a text template.")
+            return True
+        template = update.message.text
+        if template.strip() == "-":
+            template = ""
+        elif len(template) > 3000:
+            await update.message.reply_text("Template must be 3000 characters or fewer.")
+            return True
+        else:
+            allowed = {
+                "id", "followers", "country", "audience",
+                "female_percent", "male_percent", "price",
+                "quality", "status", "facebook_link",
+            }
+            try:
+                fields = {
+                    field_name
+                    for literal, field_name, format_spec, conversion
+                    in Formatter().parse(template)
+                    if field_name
+                }
+            except ValueError:
+                await update.message.reply_text("Template contains invalid braces.")
+                return True
+            unknown = fields - allowed
+            if unknown:
+                await update.message.reply_text(
+                    "Unknown placeholders: " + ", ".join(sorted(unknown))
+                )
+                return True
+        set_setting("theme_stock_card_template", template)
+        context.user_data.clear()
+        await update.message.reply_text(
+            "✅ Stock Card Template updated.",
+            reply_markup=theme_editor_menu(),
+        )
+        return True
+
     if mode in {"settings_menu_text", "settings_menu_emoji"}:
         if not update.message.text:
             await update.message.reply_text("Please send text.")
