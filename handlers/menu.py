@@ -15,6 +15,7 @@ from telegram.ext import ContextTypes
 from handlers.backup import handle_backup_callback, handle_restore_document
 from handlers.settings import handle_settings_callback, handle_settings_message
 from handlers.orders import (
+    handle_admin_order_message,
     handle_admin_order_callback,
     handle_customer_order_callback,
     handle_order_message,
@@ -1259,6 +1260,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "Use Admin Panel → Backup → Restore Database first."
             )
+        return
+
+    if is_admin(user_id) and await handle_admin_order_message(update, context):
         return
 
     if await handle_order_message(update, context):

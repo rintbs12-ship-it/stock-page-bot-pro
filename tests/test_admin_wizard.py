@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock
 from database import db
 from handlers import backup
 from handlers import settings
-from handlers.orders import handle_customer_order_callback, start_order
+from handlers.orders import (
+    handle_customer_order_callback,
+    order_manager_menu,
+    order_status_menu,
+    start_order,
+)
 from handlers.menu import (
     begin_photo_upload,
     build_stock_report,
@@ -102,7 +107,7 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:list:promotion",
                 "admin:stats",
                 "admin:analytics",
-                "admin:orders",
+                "admin:order_manager",
                 "admin:settings",
                 "admin:backup",
                 "home",
@@ -727,9 +732,48 @@ class AdminWizardTests(unittest.TestCase):
                 self.assertEqual(db.get_stock(stock_id)[8], "sold")
                 self.assertEqual(db.get_customer_orders(700)[0][0], order_id)
                 self.assertEqual(db.get_orders_by_group("completed")[0][0], order_id)
+                self.assertEqual(db.search_orders("order_id", order_id)[0][0], order_id)
+                self.assertEqual(db.search_orders("telegram_id", 700)[0][0], order_id)
+                self.assertEqual(db.search_orders("customer_name", "buy")[0][0], order_id)
+                self.assertEqual(db.search_orders("stock_id", stock_id)[0][0], order_id)
+                self.assertEqual(db.filter_orders("completed")[0][0], order_id)
+                history = [row[2] for row in db.get_order_history(order_id)]
+                self.assertEqual(history[0], "waiting_payment")
+                self.assertEqual(history[-1], "completed")
+                self.assertIn("payment_confirmed", history)
                 self.assertFalse(db.delete_stock(stock_id))
             finally:
                 db.DB_PATH = old_path
+
+    def test_order_manager_has_workflow_search_and_filter_actions(self):
+        manager_callbacks = {
+            button.callback_data
+            for row in order_manager_menu().inline_keyboard
+            for button in row
+        }
+        self.assertEqual(manager_callbacks, {
+            "admin:order_manager_active",
+            "admin:order_manager_search",
+            "admin:order_manager_filters",
+            "admin:order_manager_history",
+            "admin:home",
+        })
+        status_callbacks = {
+            button.callback_data
+            for row in order_status_menu(12).inline_keyboard
+            for button in row
+        }
+        self.assertTrue({
+            "admin:order_status:12:waiting_payment",
+            "admin:order_status:12:payment_confirmed",
+            "admin:order_status:12:waiting_customer_info",
+            "admin:order_status:12:admin_processing",
+            "admin:order_status:12:admin_added",
+            "admin:order_status:12:waiting_customer_accept",
+            "admin:order_status:12:waiting_remove_admin",
+            "admin:order_status:12:completed",
+            "admin:order_status:12:cancelled",
+        }.issubset(status_callbacks))
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
@@ -814,6 +858,50 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     "Payment QR is not configured",
                     message.reply_text.await_args.args[0],
                 )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_remove_admin_requires_confirmation_and_completes_order(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "remove-admin.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 900, "buyer", "$25")
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_remove_admin", {"waiting_payment"}
+                ))
+                message = SimpleNamespace(reply_text=AsyncMock())
+                query = SimpleNamespace(
+                    data=f"order:remove_admin:{order_id}",
+                    from_user=SimpleNamespace(id=900),
+                    message=message,
+                    edit_message_text=AsyncMock(),
+                )
+                context = SimpleNamespace(
+                    user_data={},
+                    bot=SimpleNamespace(send_message=AsyncMock()),
+                )
+
+                await handle_customer_order_callback(query, context)
+                self.assertEqual(
+                    query.edit_message_text.await_args.args[0],
+                    "Are you sure?",
+                )
+                self.assertEqual(
+                    db.get_order(order_id)[5],
+                    "waiting_remove_admin",
+                )
+
+                query.data = f"order:remove_admin_yes:{order_id}"
+                await handle_customer_order_callback(query, context)
+                self.assertEqual(db.get_order(order_id)[5], "completed")
+                self.assertEqual(db.get_stock(stock_id)[8], "sold")
+                context.bot.send_message.assert_awaited()
             finally:
                 db.DB_PATH = old_path
 

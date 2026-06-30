@@ -160,6 +160,29 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS order_status_history (
+        history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        changed_by TEXT DEFAULT 'system',
+        note TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
+    )
+    """)
+    cur.execute("""
+        INSERT INTO order_status_history (
+            order_id, status, changed_by, note, created_at
+        )
+        SELECT o.order_id, o.status, 'migration', 'Existing order imported',
+               COALESCE(NULLIF(o.updated_at, ''), o.created_at)
+        FROM orders o
+        WHERE NOT EXISTS (
+            SELECT 1 FROM order_status_history h WHERE h.order_id=o.order_id
+        )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS menu_items (
         item_key TEXT PRIMARY KEY,
         emoji TEXT NOT NULL DEFAULT '',
@@ -199,6 +222,10 @@ def init_db():
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, order_id DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_order_history_order "
+        "ON order_status_history(order_id, history_id)"
     )
 
     con.commit()
@@ -694,7 +721,8 @@ def get_trending_stocks(limit=10):
 ORDER_STATUSES = {
     "waiting_payment", "waiting_receipt", "waiting_admin_confirm",
     "payment_confirmed", "waiting_customer_info", "admin_processing",
-    "admin_added", "customer_accepted", "completed", "cancelled",
+    "admin_added", "customer_accepted", "waiting_customer_accept",
+    "waiting_remove_admin", "completed", "cancelled",
 }
 
 
@@ -709,6 +737,11 @@ def create_order(stock_id, customer_id, customer_username, price):
         ) VALUES (?, ?, ?, ?, 'waiting_payment', ?, ?)
     """, (stock_id, customer_id, customer_username or "", price, now, now))
     order_id = cur.lastrowid
+    cur.execute("""
+        INSERT INTO order_status_history (
+            order_id, status, changed_by, note, created_at
+        ) VALUES (?, 'waiting_payment', ?, 'Order created', ?)
+    """, (order_id, str(customer_id), now))
     con.commit()
     con.close()
     return order_id
@@ -728,7 +761,10 @@ def get_order(order_id):
     return row
 
 
-def transition_order(order_id, new_status, expected_statuses, customer_id=None):
+def transition_order(
+    order_id, new_status, expected_statuses, customer_id=None,
+    changed_by="system", note="",
+):
     if new_status not in ORDER_STATUSES:
         return False
     expected = tuple(expected_statuses)
@@ -753,6 +789,15 @@ def transition_order(order_id, new_status, expected_statuses, customer_id=None):
         params,
     )
     changed = cur.rowcount > 0
+    if changed:
+        cur.execute("""
+            INSERT INTO order_status_history (
+                order_id, status, changed_by, note, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (
+            order_id, new_status, str(changed_by), note,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ))
     con.commit()
     con.close()
     return changed
@@ -823,12 +868,120 @@ def get_orders_by_group(group_name, limit=30):
         "waiting": ("waiting_admin_confirm",),
         "processing": (
             "payment_confirmed", "waiting_customer_info",
-            "admin_processing", "admin_added", "customer_accepted",
+            "admin_processing", "admin_added", "waiting_customer_accept",
+            "customer_accepted", "waiting_remove_admin",
         ),
         "completed": ("completed",),
         "cancelled": ("cancelled",),
     }
     statuses = groups.get(group_name)
+    if not statuses:
+        return []
+    placeholders = ",".join("?" for _ in statuses)
+    con = connect()
+    cur = con.cursor()
+    cur.execute(f"""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders WHERE status IN ({placeholders})
+        ORDER BY order_id DESC LIMIT ?
+    """, (*statuses, limit))
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
+def get_active_orders(limit=50):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders
+        WHERE status NOT IN ('completed', 'cancelled')
+        ORDER BY order_id DESC LIMIT ?
+    """, (limit,))
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
+def get_all_orders(limit=100):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders
+        ORDER BY order_id DESC LIMIT ?
+    """, (limit,))
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
+def get_order_history(order_id):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT history_id, order_id, status, changed_by, note, created_at
+        FROM order_status_history
+        WHERE order_id=?
+        ORDER BY history_id ASC
+    """, (order_id,))
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
+def search_orders(search_type, value, limit=50):
+    fields = {
+        "order_id": ("order_id=?", int),
+        "telegram_id": ("customer_id=?", int),
+        "customer_name": ("LOWER(customer_username) LIKE LOWER(?)", str),
+        "stock_id": ("stock_id=?", int),
+    }
+    field = fields.get(search_type)
+    if not field:
+        return []
+    clause, converter = field
+    try:
+        converted = converter(value)
+    except (TypeError, ValueError):
+        return []
+    if search_type == "customer_name":
+        converted = f"%{converted.lstrip('@')}%"
+    con = connect()
+    cur = con.cursor()
+    cur.execute(f"""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders WHERE {clause}
+        ORDER BY order_id DESC LIMIT ?
+    """, (converted, limit))
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
+def filter_orders(filter_name, limit=50):
+    groups = {
+        "pending": (
+            "waiting_payment", "waiting_receipt", "waiting_admin_confirm",
+        ),
+        "processing": (
+            "payment_confirmed", "waiting_customer_info", "admin_processing",
+            "admin_added", "waiting_customer_accept", "customer_accepted",
+            "waiting_remove_admin",
+        ),
+        "completed": ("completed",),
+        "cancelled": ("cancelled",),
+    }
+    statuses = groups.get(filter_name)
     if not statuses:
         return []
     placeholders = ",".join("?" for _ in statuses)
