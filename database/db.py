@@ -377,6 +377,14 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, order_id DESC)"
     )
     cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_created "
+        "ON orders(created_at, order_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_completed "
+        "ON orders(completed_at, order_id)"
+    )
+    cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_order_history_order "
         "ON order_status_history(order_id, history_id)"
     )
@@ -393,12 +401,20 @@ def init_db():
         "ON customer_profiles(username)"
     )
     cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_profiles_created "
+        "ON customer_profiles(created_at, telegram_id)"
+    )
+    cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_customer_profiles_facebook "
         "ON customer_profiles(facebook_profile_link)"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_broadcasts_schedule "
         "ON broadcasts(status, scheduled_at)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_payment_logs_action_created "
+        "ON payment_logs(action, created_at)"
     )
 
     con.commit()

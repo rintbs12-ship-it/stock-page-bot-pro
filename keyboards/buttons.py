@@ -188,6 +188,10 @@ def admin_home():
         [InlineKeyboardButton("🔥 Promotion", callback_data="admin:list:promotion"),
          InlineKeyboardButton("📊 Statistics", callback_data="admin:stats")],
         [InlineKeyboardButton("📈 Customer Analytics", callback_data="admin:analytics")],
+        [InlineKeyboardButton(
+            "📊 Analytics Dashboard",
+            callback_data="admin:analytics_dashboard",
+        )],
         [InlineKeyboardButton("📦 Order Manager", callback_data="admin:order_manager")],
         [InlineKeyboardButton("👥 Customers", callback_data="admin:customers")],
         [InlineKeyboardButton(

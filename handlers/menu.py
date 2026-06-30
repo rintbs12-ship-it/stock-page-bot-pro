@@ -31,6 +31,7 @@ from handlers.notifications import (
     handle_notification_callback,
     handle_notification_message,
 )
+from handlers.analytics import handle_analytics_callback
 from keyboards.buttons import (
     admin_home,
     admin_edit_menu,
@@ -496,6 +497,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
+
+    if data.startswith("admin:analytics_"):
+        await handle_analytics_callback(query, context)
+        return
 
     if data.startswith("admin:notify"):
         await handle_notification_callback(query, context)

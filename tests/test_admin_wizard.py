@@ -21,6 +21,13 @@ from handlers.notifications import (
     handle_notification_callback,
     process_due_broadcasts,
 )
+from handlers.analytics import (
+    export_analytics_csv,
+    export_analytics_txt,
+    format_analytics_dashboard,
+    get_analytics_data,
+    handle_analytics_callback,
+)
 from handlers.orders import (
     format_order,
     handle_admin_order_callback,
@@ -61,9 +68,129 @@ from health import start_health_server
 
 
 class AdminWizardTests(unittest.TestCase):
+    def _create_analytics_fixture(self):
+        db.init_db()
+        first_stock = db.create_stock(
+            5, "Cambodia", "", "$25", "100%", "",
+            "https://facebook.com/one", "available",
+        )
+        second_stock = db.create_stock(
+            20, "Cambodia", "", "$50", "95%", "",
+            "https://facebook.com/two", "available",
+        )
+        orders = [
+            db.create_order(first_stock, 700, "topbuyer", "$25"),
+            db.create_order(first_stock, 700, "topbuyer", "$75"),
+            db.create_order(second_stock, 701, "vipbuyer", "$50"),
+            db.create_order(second_stock, 702, "cancelled", "$40"),
+            db.create_order(second_stock, 703, "pending", "$30"),
+        ]
+        rows = (
+            ("completed", "2026-06-30 09:00:00", "2026-06-30 11:00:00"),
+            ("completed", "2026-06-25 09:00:00", "2026-06-25 15:00:00"),
+            ("completed", "2026-06-10 09:00:00", "2026-06-11 09:00:00"),
+            ("cancelled", "2026-06-30 08:00:00", ""),
+            ("waiting_payment", "2026-05-01 08:00:00", ""),
+        )
+        con = db.connect()
+        for order_id, (status, created_at, completed_at) in zip(orders, rows):
+            con.execute("""
+                UPDATE orders
+                SET status=?, created_at=?, completed_at=?, updated_at=?
+                WHERE order_id=?
+            """, (
+                status, created_at, completed_at,
+                completed_at or created_at, order_id,
+            ))
+        con.executemany("""
+            INSERT INTO payment_logs (
+                order_id, admin_id, action, reason,
+                receipt_file_id, created_at
+            ) VALUES (?, 619658883, ?, '', '', ?)
+        """, [
+            (orders[0], "approved", "2026-06-30 10:00:00"),
+            (orders[3], "rejected", "2026-06-30 10:00:00"),
+        ])
+        con.commit()
+        con.close()
+        for user_id, username in (
+            (700, "topbuyer"), (701, "vipbuyer"),
+            (702, "cancelled"), (703, "pending"),
+        ):
+            db.upsert_customer_profile(user_id, username)
+        db.toggle_customer_flag(701, "is_vip")
+        db.toggle_customer_flag(702, "is_banned")
+        con = db.connect()
+        con.execute(
+            "UPDATE customer_profiles SET created_at='2026-06-30 07:00:00'"
+        )
+        con.commit()
+        con.close()
+        return datetime(2026, 6, 30, 12, 0, 0)
+
     def test_production_release_version(self):
         self.assertEqual(PRODUCT_NAME, "Stock Page Bot Pro")
         self.assertEqual(__version__, "1.0")
+
+    def test_analytics_dashboard_summary_and_revenue(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "analytics-summary.db")
+            try:
+                now = self._create_analytics_fixture()
+                data = get_analytics_data("all", now)
+                self.assertEqual(
+                    (data["orders"], data["completed"], data["cancelled"],
+                     data["pending"]),
+                    (5, 3, 1, 1),
+                )
+                self.assertEqual(data["total_revenue"], 150.0)
+                self.assertEqual(data["today_revenue"], 25.0)
+                self.assertEqual(data["monthly_revenue"], 150.0)
+                self.assertEqual(data["average_order"], 50.0)
+                dashboard = format_analytics_dashboard(data)
+                self.assertIn("📊 Analytics Dashboard", dashboard)
+                self.assertIn("Revenue", dashboard)
+                self.assertIn("████", dashboard)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_analytics_customer_statistics_and_top_customers(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "analytics-customers.db")
+            try:
+                now = self._create_analytics_fixture()
+                data = get_analytics_data("all", now)
+                self.assertEqual(data["total_customers"], 4)
+                self.assertEqual(data["vip_customers"], 1)
+                self.assertEqual(data["banned_customers"], 1)
+                self.assertEqual(data["top_customers"][0][0], 700)
+                self.assertEqual(data["top_customers"][0][2:], (2, 100.0))
+                self.assertEqual(data["highest_spending"][0][0], 700)
+                self.assertEqual(data["most_purchased_stock"][0][1], 2)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_analytics_filters_and_exports(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "analytics-export.db")
+            try:
+                now = self._create_analytics_fixture()
+                self.assertEqual(get_analytics_data("today", now)["orders"], 2)
+                self.assertEqual(get_analytics_data("7d", now)["orders"], 3)
+                self.assertEqual(get_analytics_data("30d", now)["orders"], 4)
+                self.assertEqual(get_analytics_data("month", now)["orders"], 4)
+                all_time = get_analytics_data("all", now)
+                csv_text = export_analytics_csv(all_time).decode("utf-8")
+                txt_text = export_analytics_txt(all_time).decode("utf-8")
+                self.assertIn("Metric,Value", csv_text)
+                self.assertIn("Total Revenue,150.00", csv_text)
+                self.assertIn("VIP Customers: 1", txt_text)
+                self.assertIn("Verified Payments: 1", txt_text)
+            finally:
+                db.DB_PATH = old_path
 
     def test_parse_followers_value_accepts_plain_and_k_suffix(self):
         self.assertEqual(parse_followers_value("15"), 15)
@@ -122,6 +249,7 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:list:promotion",
                 "admin:stats",
                 "admin:analytics",
+                "admin:analytics_dashboard",
                 "admin:order_manager",
                 "admin:customers",
                 "admin:notify",
@@ -1080,6 +1208,18 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_non_admin_cannot_access_analytics_dashboard(self):
+        query = SimpleNamespace(
+            data="admin:analytics_dashboard",
+            from_user=SimpleNamespace(id=700),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        context = SimpleNamespace(user_data={})
+        self.assertTrue(await handle_analytics_callback(query, context))
+        self.assertIn(
+            "Admin only", query.message.reply_text.await_args.args[0]
+        )
+
     async def test_broadcast_delivery_report_and_history_are_saved(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:
