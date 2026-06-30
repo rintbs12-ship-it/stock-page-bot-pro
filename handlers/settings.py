@@ -3,6 +3,7 @@ from string import Formatter
 
 from config import FACEBOOK_CONTACT, TELEGRAM_CONTACT
 from database.db import (
+    add_audit_log,
     add_admin,
     clear_photo_upload_session,
     get_setting,
@@ -15,9 +16,14 @@ from database.db import (
     set_setting,
     update_menu_item,
 )
+from handlers.audit import admin_display_name
 
 
 OWNER_ID = 619658883
+
+
+def _audit(user, action, target, details=""):
+    add_audit_log(user.id, admin_display_name(user), action, target, details)
 
 
 def settings_menu():
@@ -295,6 +301,7 @@ async def handle_settings_callback(query, context):
         if style not in {"minimal", "classic", "modern"}:
             return
         set_setting("theme_menu_style", style)
+        _audit(query.from_user, "Edit Theme", "Menu Style", style)
         await query.edit_message_text(
             f"✅ Menu Style: {style.title()}",
             reply_markup=theme_style_menu(),
@@ -319,6 +326,7 @@ async def handle_settings_callback(query, context):
         if separator_key not in separators:
             return
         set_setting("theme_separator", separators[separator_key])
+        _audit(query.from_user, "Edit Theme", "Separator", separator_key)
         await query.edit_message_text(
             "✅ Separator updated.",
             reply_markup=theme_separator_menu(),
@@ -378,6 +386,7 @@ async def handle_settings_callback(query, context):
 
     if data == "admin:settings_menu_reset":
         reset_menu_items()
+        _audit(query.from_user, "Edit Menu", "Customer Menu", "reset defaults")
         await query.edit_message_text(
             "✅ Customer menu restored to defaults.",
             reply_markup=menu_editor_keyboard(get_menu_items()),
@@ -442,6 +451,10 @@ async def handle_settings_callback(query, context):
             await query.edit_message_text("Menu button not found.")
             return
         update_menu_item(item_key, "enabled", not bool(item[5]))
+        _audit(
+            query.from_user, "Edit Menu", item_key,
+            f"enabled={not bool(item[5])}",
+        )
         updated = get_menu_item(item_key)
         await query.edit_message_text(
             menu_item_editor_text(updated),
@@ -452,6 +465,7 @@ async def handle_settings_callback(query, context):
     if data.startswith("admin:settings_menu_move:"):
         _, _, item_key, direction = data.split(":")
         move_menu_item(item_key, direction)
+        _audit(query.from_user, "Edit Menu", item_key, f"move={direction}")
         item = get_menu_item(item_key)
         await query.edit_message_text(
             menu_item_editor_text(item),
@@ -632,6 +646,7 @@ async def handle_settings_callback(query, context):
             )
             return
         set_setting(setting, value)
+        _audit(query.from_user, "Edit Settings", setting, value)
         await query.edit_message_text(
             f"✅ {setting.replace('_', ' ').title()}: {value}",
             reply_markup=settings_menu(),
@@ -660,6 +675,7 @@ async def handle_settings_message(update, context):
         if value == "-":
             value = ""
         set_setting(key, value)
+        _audit(update.effective_user, "Edit Theme", key, value)
         context.user_data.clear()
         await update.message.reply_text(
             "✅ Theme updated.",
@@ -681,6 +697,7 @@ async def handle_settings_message(update, context):
             "new", "featured", "promotion", "contact", "language", "notify",
         }:
             update_menu_item(icon_key, "emoji", value)
+        _audit(update.effective_user, "Edit Theme", f"{icon_key} Icon", value)
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ {icon_key.title()} icon updated.",
@@ -721,6 +738,10 @@ async def handle_settings_message(update, context):
                 )
                 return True
         set_setting("theme_stock_card_template", template)
+        _audit(
+            update.effective_user, "Edit Theme", "Stock Card Template",
+            "cleared" if not template else "updated",
+        )
         context.user_data.clear()
         await update.message.reply_text(
             "✅ Stock Card Template updated.",
@@ -754,6 +775,7 @@ async def handle_settings_message(update, context):
                 )
                 return True
             update_menu_item(item_key, "emoji", value)
+        _audit(update.effective_user, "Edit Menu", item_key, f"value={value}")
         context.user_data.clear()
         updated = get_menu_item(item_key)
         await update.message.reply_text(
@@ -767,6 +789,7 @@ async def handle_settings_message(update, context):
             await update.message.reply_text("Please send one photo.")
             return True
         set_setting("bot_logo_file_id", update.message.photo[-1].file_id)
+        _audit(update.effective_user, "Edit Settings", "Bot Logo")
         context.user_data.clear()
         await update.message.reply_text(
             "✅ Bot Logo updated.",
@@ -779,6 +802,7 @@ async def handle_settings_message(update, context):
             await update.message.reply_text("Please send one QR photo.")
             return True
         set_setting("payment_qr_file_id", update.message.photo[-1].file_id)
+        _audit(update.effective_user, "Edit Payment QR", "Payment QR")
         context.user_data.clear()
         await update.message.reply_text(
             "✅ Payment QR updated.",
@@ -821,6 +845,11 @@ async def handle_settings_message(update, context):
             await update.message.reply_text("Country name must be 30 characters or fewer.")
             return True
         set_setting(key, value)
+        action = {
+            "welcome_message": "Edit Welcome Message",
+            "announcement": "Edit Announcement",
+        }.get(key, "Edit Settings")
+        _audit(update.effective_user, action, key, value)
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ {key.replace('_', ' ').title()} updated.",

@@ -29,6 +29,11 @@ from handlers.analytics import (
     get_analytics_data,
     handle_analytics_callback,
 )
+from handlers.audit import (
+    PER_PAGE,
+    audit_logs_keyboard,
+    export_audit_csv,
+)
 from handlers.orders import (
     format_order,
     handle_admin_order_callback,
@@ -254,11 +259,65 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:order_manager",
                 "admin:customers",
                 "admin:notify",
+                "admin:audit",
                 "admin:settings",
                 "admin:backup",
                 "home",
             },
         )
+
+    def test_audit_log_migration_filters_search_pagination_and_csv(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "audit.db")
+            try:
+                db.init_db()
+                con = db.connect()
+                columns = {
+                    row[1] for row in con.execute(
+                        "PRAGMA table_info(audit_logs)"
+                    ).fetchall()
+                }
+                con.close()
+                self.assertEqual(columns, {
+                    "id", "admin_id", "admin_name", "action", "target",
+                    "details", "created_at",
+                })
+                for index in range(25):
+                    db.add_audit_log(
+                        100 if index < 20 else 200,
+                        "DORN" if index < 20 else "SECOND",
+                        "Approve Payment" if index % 2 == 0 else "Edit Stock",
+                        f"Order #{index}",
+                        f"Customer {500 + index}",
+                    )
+                rows, total = db.get_audit_logs(page=1, per_page=PER_PAGE)
+                self.assertEqual((len(rows), total), (20, 25))
+                second_page, _ = db.get_audit_logs(page=2, per_page=PER_PAGE)
+                self.assertEqual(len(second_page), 5)
+                admin_rows, admin_total = db.get_audit_logs(admin_id=200)
+                self.assertEqual((len(admin_rows), admin_total), (5, 5))
+                action_rows, action_total = db.get_audit_logs(
+                    action="Approve Payment"
+                )
+                self.assertEqual(action_total, 13)
+                self.assertTrue(all(row[3] == "Approve Payment" for row in action_rows))
+                search_rows, search_total = db.get_audit_logs(search="Order #24")
+                self.assertEqual((len(search_rows), search_total), (1, 1))
+                keyboard = audit_logs_keyboard(1, 25)
+                callbacks = {
+                    button.callback_data
+                    for row in keyboard.inline_keyboard for button in row
+                }
+                self.assertIn("admin:audit:page:2", callbacks)
+                csv_text = export_audit_csv({
+                    "period": "all", "admin_id": None,
+                    "action": None, "search": "",
+                }).decode("utf-8-sig")
+                self.assertEqual(len(csv_text.splitlines()), 26)
+                self.assertIn("Approve Payment", csv_text)
+            finally:
+                db.DB_PATH = old_path
 
     def test_wizard_choice_validation(self):
         self.assertEqual(normalize_quality("a+"), "A+")

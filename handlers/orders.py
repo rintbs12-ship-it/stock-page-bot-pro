@@ -3,6 +3,7 @@ from telegram.error import TelegramError
 from urllib.parse import urlparse
 
 from database.db import (
+    add_audit_log,
     create_order,
     get_customer_action_order,
     get_customer_profile,
@@ -29,6 +30,7 @@ from database.db import (
     upsert_customer_profile,
     verify_payment,
 )
+from handlers.audit import admin_display_name
 
 
 STATUS_DISPLAY = {
@@ -710,6 +712,11 @@ async def handle_admin_order_callback(query, context):
                 "Payment was already reviewed or is unavailable."
             )
             return
+        add_audit_log(
+            query.from_user.id, admin_display_name(query.from_user),
+            "Approve Payment", f"Order #{order_id}",
+            f"Customer {order[2]}",
+        )
         notified = await _send_to_customer(
             context,
             order[2],
@@ -1122,6 +1129,11 @@ async def handle_admin_order_callback(query, context):
             },
         )
         if changed:
+            add_audit_log(
+                query.from_user.id, admin_display_name(query.from_user),
+                "Cancel Order", f"Order #{order_id}",
+                f"Customer {order[2]}",
+            )
             await _send_to_customer(
                 context,
                 order[2],

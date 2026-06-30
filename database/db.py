@@ -274,6 +274,17 @@ def init_db():
     )
     """)
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        admin_name TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        target TEXT NOT NULL DEFAULT '',
+        details TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT ''
+    )
+    """)
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS broadcast_recipients (
         broadcast_id INTEGER NOT NULL,
         telegram_id INTEGER NOT NULL,
@@ -427,12 +438,101 @@ def init_db():
         "ON backup_logs(created_at, id)"
     )
     cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_created "
+        "ON audit_logs(created_at DESC, id DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_admin "
+        "ON audit_logs(admin_id, created_at DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_logs_action "
+        "ON audit_logs(action, created_at DESC)"
+    )
+    cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_payment_logs_action_created "
         "ON payment_logs(action, created_at)"
     )
 
     con.commit()
     con.close()
+
+
+def add_audit_log(admin_id, admin_name, action, target="", details=""):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO audit_logs (
+            admin_id, admin_name, action, target, details, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        int(admin_id), str(admin_name or admin_id), str(action),
+        str(target or ""), str(details or ""), now,
+    ))
+    log_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return log_id
+
+
+def get_audit_logs(
+    page=1, per_page=20, period="all", admin_id=None, action=None, search=""
+):
+    page = max(1, int(page))
+    per_page = max(1, min(100, int(per_page)))
+    clauses = []
+    params = []
+    if period in {"today", "7d", "30d"}:
+        modifier = {"today": "start of day", "7d": "-7 days", "30d": "-30 days"}[period]
+        clauses.append("created_at >= datetime('now', 'localtime', ?)")
+        params.append(modifier)
+    if admin_id is not None:
+        clauses.append("admin_id=?")
+        params.append(int(admin_id))
+    if action:
+        clauses.append("action=?")
+        params.append(str(action))
+    if search:
+        term = f"%{str(search).strip()}%"
+        clauses.append("""(
+            CAST(admin_id AS TEXT) LIKE ? OR action LIKE ? OR target LIKE ?
+            OR details LIKE ?
+        )""")
+        params.extend([term] * 4)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    con = connect()
+    total = con.execute(
+        f"SELECT COUNT(*) FROM audit_logs{where}", params
+    ).fetchone()[0]
+    rows = con.execute(f"""
+        SELECT id, admin_id, admin_name, action, target, details, created_at
+        FROM audit_logs{where}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?
+    """, params + [per_page, (page - 1) * per_page]).fetchall()
+    con.close()
+    return rows, total
+
+
+def get_audit_admins():
+    con = connect()
+    rows = con.execute("""
+        SELECT admin_id, MAX(admin_name), COUNT(*)
+        FROM audit_logs GROUP BY admin_id ORDER BY MAX(admin_name), admin_id
+    """).fetchall()
+    con.close()
+    return rows
+
+
+def get_audit_actions():
+    con = connect()
+    rows = con.execute("""
+        SELECT action, COUNT(*) FROM audit_logs
+        GROUP BY action ORDER BY action
+    """).fetchall()
+    con.close()
+    return rows
 
 
 def add_demo_stock_if_empty():

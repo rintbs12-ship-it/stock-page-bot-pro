@@ -13,6 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 
 from config import DB_PATH
 from database.db import (
+    add_audit_log,
     add_backup_log,
     connect,
     get_backup_logs,
@@ -22,6 +23,7 @@ from database.db import (
     is_admin_user,
     set_setting,
 )
+from handlers.audit import admin_display_name
 
 
 BACKUP_DIR = Path(DB_PATH).resolve().parent / "backups"
@@ -125,7 +127,7 @@ def export_database_bytes():
         return snapshot.read_bytes()
 
 
-def create_backup(now=None, admin_id=0):
+def create_backup(now=None, admin_id=0, admin_name=""):
     now = now or datetime.now()
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     base_name = f"backup_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -154,6 +156,10 @@ def create_backup(now=None, admin_id=0):
             json.dumps(info, ensure_ascii=False, indent=2),
         )
     add_backup_log("created", destination.name, admin_id)
+    if admin_id:
+        add_audit_log(
+            admin_id, admin_name or admin_id, "Create Backup", destination.name
+        )
     return destination
 
 
@@ -265,7 +271,9 @@ def validate_database_bytes(database_bytes):
             raise ValueError("The uploaded database failed validation")
 
 
-def restore_database_bytes(database_bytes, admin_id=0, action="restore", filename=""):
+def restore_database_bytes(
+    database_bytes, admin_id=0, action="restore", filename="", admin_name=""
+):
     validate_database_bytes(database_bytes)
     create_backup()
     database_path = Path(DB_PATH).resolve()
@@ -274,6 +282,11 @@ def restore_database_bytes(database_bytes, admin_id=0, action="restore", filenam
     os.replace(temporary_path, database_path)
     init_db()
     add_backup_log(action, filename, admin_id)
+    if admin_id:
+        add_audit_log(
+            admin_id, admin_name or admin_id, "Restore Backup",
+            filename or "Uploaded database", f"source={action}",
+        )
 
 
 def format_backup_history(backups):
@@ -393,7 +406,10 @@ async def handle_backup_callback(query, context):
         return
 
     if data == "admin:backup_create":
-        backup = create_backup(admin_id=query.from_user.id)
+        backup = create_backup(
+            admin_id=query.from_user.id,
+            admin_name=admin_display_name(query.from_user),
+        )
         with backup.open("rb") as document:
             await query.message.reply_document(
                 document=document,
@@ -468,6 +484,7 @@ async def handle_backup_callback(query, context):
                 admin_id=query.from_user.id,
                 action="restore",
                 filename=filename,
+                admin_name=admin_display_name(query.from_user),
             )
         except (ValueError, zipfile.BadZipFile, sqlite3.DatabaseError) as exc:
             await query.message.reply_text(f"❌ Restore failed: {exc}")
@@ -510,6 +527,7 @@ async def handle_backup_callback(query, context):
             admin_id=query.from_user.id,
             action=source,
             filename=filename,
+            admin_name=admin_display_name(query.from_user),
         )
         context.user_data.clear()
         await query.edit_message_text(

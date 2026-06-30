@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from database.db import (
+    add_audit_log,
     get_customer_orders,
     get_customer_profile,
     is_admin_user,
@@ -13,6 +14,7 @@ from database.db import (
     update_customer_profile_field,
     upsert_customer_profile,
 )
+from handlers.audit import admin_display_name
 from handlers.orders import order_history_keyboard
 
 
@@ -250,6 +252,11 @@ async def handle_crm_callback(query, context):
         toggle_customer_flag(
             telegram_id, "is_vip" if action == "vip" else "is_banned"
         )
+        add_audit_log(
+            query.from_user.id, admin_display_name(query.from_user),
+            "Edit Customer Profile", f"Customer {telegram_id}",
+            f"toggle {'is_vip' if action == 'vip' else 'is_banned'}",
+        )
         profile = get_customer_profile(telegram_id)
         await query.edit_message_text(
             profile_text(profile, admin=True),
@@ -290,6 +297,11 @@ async def handle_crm_message(update, context):
             return True
         telegram_id = context.user_data.get("crm_customer_id")
         update_customer_profile_field(telegram_id, "admin_notes", text)
+        add_audit_log(
+            update.effective_user.id, admin_display_name(update.effective_user),
+            "Edit Customer Profile", f"Customer {telegram_id}",
+            "updated admin notes",
+        )
         context.user_data.clear()
         profile = get_customer_profile(telegram_id)
         await update.message.reply_text(

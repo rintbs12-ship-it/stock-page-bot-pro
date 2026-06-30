@@ -32,6 +32,11 @@ from handlers.notifications import (
     handle_notification_message,
 )
 from handlers.analytics import handle_analytics_callback
+from handlers.audit import (
+    admin_display_name,
+    handle_audit_callback,
+    handle_audit_message,
+)
 from keyboards.buttons import (
     admin_home,
     admin_edit_menu,
@@ -62,6 +67,7 @@ from keyboards.buttons import (
 )
 from database.db import (
     add_stock_photo,
+    add_audit_log,
     clear_photo_upload_session,
     create_stock,
     delete_all_stock_photos,
@@ -500,6 +506,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("admin:analytics_"):
         await handle_analytics_callback(query, context)
+        return
+
+    if data.startswith("admin:audit"):
+        await handle_audit_callback(query, context)
         return
 
     if data.startswith("admin:notify"):
@@ -1037,6 +1047,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("admin:set_status:"):
         _, _, stock_id, status = data.split(":")
         update_stock_field(int(stock_id), "status", normalize_status(status))
+        add_audit_log(
+            uid, admin_display_name(query.from_user), "Edit Stock",
+            f"Stock #{stock_id}", f"status={normalize_status(status)}",
+        )
         row = get_stock(int(stock_id))
         await query.edit_message_text(
             admin_stock_text(row),
@@ -1048,6 +1062,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("admin:flag:"):
         _, _, field, stock_id = data.split(":")
         toggle_stock_flag(int(stock_id), field)
+        add_audit_log(
+            uid, admin_display_name(query.from_user), "Edit Stock",
+            f"Stock #{stock_id}", f"toggled {field}",
+        )
         row = get_stock(int(stock_id))
         await query.edit_message_text(
             admin_stock_text(row),
@@ -1059,6 +1077,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("admin:delete_confirm:"):
         stock_id = int(data.rsplit(":", 1)[1])
         deleted = delete_stock(stock_id)
+        if deleted:
+            add_audit_log(
+                uid, admin_display_name(query.from_user), "Delete Stock",
+                f"Stock #{stock_id}",
+            )
         await query.edit_message_text(
             f"{'✅ Deleted' if deleted else 'Stock not found'}: Stock #{stock_id}",
             reply_markup=admin_home(),
@@ -1077,6 +1100,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, _, stock_id, status = data.split(":")
         stock_id = int(stock_id)
         update_stock_field(stock_id, "status", normalize_status(status))
+        add_audit_log(
+            uid, admin_display_name(query.from_user), "Edit Stock",
+            f"Stock #{stock_id}", f"status={normalize_status(status)}",
+        )
         row = get_stock(stock_id)
         await query.edit_message_text(
             admin_stock_text(row),
@@ -1234,6 +1261,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         status = normalize_status(data.rsplit(":", 1)[1])
         stock_id = save_stock_draft(context, status)
+        add_audit_log(
+            uid, admin_display_name(query.from_user), "Create Stock",
+            f"Stock #{stock_id}", f"status={status}",
+        )
         mark_stock_notification_pending(stock_id)
         begin_photo_upload(context, uid, stock_id)
         await query.edit_message_text(
@@ -1312,6 +1343,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await handle_order_message(update, context):
+        return
+
+    if is_admin(user_id) and await handle_audit_message(update, context):
         return
 
     if is_admin(user_id) and await handle_settings_message(update, context):
@@ -1420,6 +1454,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Invalid value: {exc}")
                 return
             update_stock_field(stock_id, field, value)
+            add_audit_log(
+                user_id, admin_display_name(update.effective_user), "Edit Stock",
+                f"Stock #{stock_id}", f"{field}={value}",
+            )
             context.user_data.clear()
             row = get_stock(stock_id)
             await update.message.reply_text(
@@ -1447,6 +1485,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Invalid value: {exc}")
                 return
             update_stock_field(stock_id, field, value)
+            add_audit_log(
+                user_id, admin_display_name(update.effective_user), "Edit Stock",
+                f"Stock #{stock_id}", f"{field}={value}",
+            )
             context.user_data.clear()
             row = get_stock(stock_id)
             await update.message.reply_text(
@@ -1586,6 +1628,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             stock_id = save_stock_draft(context, status)
+            add_audit_log(
+                user_id, admin_display_name(update.effective_user), "Create Stock",
+                f"Stock #{stock_id}", f"status={status}",
+            )
             mark_stock_notification_pending(stock_id)
             begin_photo_upload(context, update.effective_user.id, stock_id)
             await update.message.reply_text(
