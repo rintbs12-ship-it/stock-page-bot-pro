@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import zipfile
 import asyncio
+import io
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -577,12 +578,14 @@ class AdminWizardTests(unittest.TestCase):
             try:
                 db.init_db()
                 db.set_setting("auto_backup_schedule", "daily")
+                db.set_setting("auto_backup_keep", "1")
                 first = backup.run_due_auto_backup(datetime(2026, 6, 1, 8, 0, 0))
                 second = backup.run_due_auto_backup(datetime(2026, 6, 1, 12, 0, 0))
                 third = backup.run_due_auto_backup(datetime(2026, 6, 2, 8, 0, 0))
                 self.assertIsNotNone(first)
                 self.assertIsNone(second)
                 self.assertIsNotNone(third)
+                self.assertEqual(len(backup.list_backups()), 1)
                 self.assertEqual(db.get_setting("auto_backup_schedule"), "daily")
             finally:
                 db.DB_PATH = old_db_path
@@ -601,9 +604,60 @@ class AdminWizardTests(unittest.TestCase):
             "admin:backup_restore",
             "admin:backup_delete_menu",
             "admin:backup_history",
+            "admin:backup_import",
+            "admin:backup_logs",
             "admin:backup_auto",
             "admin:home",
         })
+
+    def test_backup_exports_import_logs_and_invalid_restore(self):
+        old_db_path = db.DB_PATH
+        old_backup_db_path = backup.DB_PATH
+        old_backup_dir = backup.BACKUP_DIR
+        with tempfile.TemporaryDirectory() as folder:
+            database_path = Path(folder) / "database.db"
+            db.DB_PATH = str(database_path)
+            backup.DB_PATH = str(database_path)
+            backup.BACKUP_DIR = Path(folder) / "backups"
+            try:
+                db.init_db()
+                db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                raw = backup.export_database_bytes()
+                self.assertTrue(raw.startswith(b"SQLite format 3\x00"))
+                with zipfile.ZipFile(
+                    io.BytesIO(backup.export_database_zip_bytes())
+                ) as archive:
+                    self.assertIn("database.db", archive.namelist())
+                with zipfile.ZipFile(
+                    io.BytesIO(backup.export_database_csv_bytes())
+                ) as archive:
+                    self.assertIn("stocks.csv", archive.namelist())
+                    self.assertIn("customer_profiles.csv", archive.namelist())
+
+                imported = backup.extract_database_bytes(
+                    "database.db", raw
+                )
+                backup.restore_database_bytes(
+                    imported,
+                    admin_id=619658883,
+                    action="import",
+                    filename="database.db",
+                )
+                self.assertEqual(db.get_backup_logs(1)[0][1], "import")
+                with self.assertRaises(ValueError):
+                    backup.extract_database_bytes("invalid.db", b"not sqlite")
+                with self.assertRaises((ValueError, zipfile.BadZipFile)):
+                    backup.extract_database_bytes(
+                        "invalid.zip",
+                        io.BytesIO().getvalue(),
+                    )
+            finally:
+                db.DB_PATH = old_db_path
+                backup.DB_PATH = old_backup_db_path
+                backup.BACKUP_DIR = old_backup_dir
 
     def test_settings_center_and_dynamic_admin_storage(self):
         old_path = db.DB_PATH
@@ -1208,6 +1262,18 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_non_admin_cannot_access_backup_manager(self):
+        query = SimpleNamespace(
+            data="admin:backup",
+            from_user=SimpleNamespace(id=700),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        context = SimpleNamespace(user_data={})
+        await backup.handle_backup_callback(query, context)
+        self.assertIn(
+            "Admin only", query.message.reply_text.await_args.args[0]
+        )
+
     async def test_non_admin_cannot_access_analytics_dashboard(self):
         query = SimpleNamespace(
             data="admin:analytics_dashboard",

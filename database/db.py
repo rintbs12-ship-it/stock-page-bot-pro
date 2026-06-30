@@ -264,6 +264,16 @@ def init_db():
     )
     """)
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS backup_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL,
+        filename TEXT DEFAULT '',
+        details TEXT DEFAULT '',
+        admin_id INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT ''
+    )
+    """)
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS broadcast_recipients (
         broadcast_id INTEGER NOT NULL,
         telegram_id INTEGER NOT NULL,
@@ -411,6 +421,10 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_broadcasts_schedule "
         "ON broadcasts(status, scheduled_at)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_backup_logs_created "
+        "ON backup_logs(created_at, id)"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_payment_logs_action_created "
@@ -687,6 +701,33 @@ def get_all_settings():
     settings = dict(cur.fetchall())
     con.close()
     return settings
+
+
+def add_backup_log(action, filename="", admin_id=0, details=""):
+    if action not in {"created", "restore", "import", "delete"}:
+        return False
+    con = connect()
+    con.execute("""
+        INSERT INTO backup_logs (
+            action, filename, details, admin_id, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+    """, (
+        action, filename or "", details or "", int(admin_id),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    ))
+    con.commit()
+    con.close()
+    return True
+
+
+def get_backup_logs(limit=50):
+    con = connect()
+    rows = con.execute("""
+        SELECT id, action, filename, details, admin_id, created_at
+        FROM backup_logs ORDER BY id DESC LIMIT ?
+    """, (limit,)).fetchall()
+    con.close()
+    return rows
 
 
 def is_admin_user(user_id):

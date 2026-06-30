@@ -1,4 +1,5 @@
 import io
+import csv
 import json
 import os
 import re
@@ -12,9 +13,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 
 from config import DB_PATH
 from database.db import (
+    add_backup_log,
+    connect,
+    get_backup_logs,
     get_all_settings,
     get_setting,
     init_db,
+    is_admin_user,
     set_setting,
 )
 
@@ -29,13 +34,22 @@ AUTO_BACKUP_INTERVALS = {
 }
 
 
+def get_backup_retention():
+    try:
+        return max(1, min(100, int(get_setting("auto_backup_keep", "10"))))
+    except (TypeError, ValueError):
+        return 10
+
+
 def backup_manager_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📦 Create Backup", callback_data="admin:backup_create")],
-        [InlineKeyboardButton("📥 Export Database", callback_data="admin:backup_export")],
-        [InlineKeyboardButton("📤 Restore Database", callback_data="admin:backup_restore")],
+        [InlineKeyboardButton("💾 Create Backup", callback_data="admin:backup_create")],
+        [InlineKeyboardButton("📂 List Backups", callback_data="admin:backup_history")],
+        [InlineKeyboardButton("♻ Restore Backup", callback_data="admin:backup_restore")],
         [InlineKeyboardButton("🗑 Delete Backup", callback_data="admin:backup_delete_menu")],
-        [InlineKeyboardButton("📋 Backup History", callback_data="admin:backup_history")],
+        [InlineKeyboardButton("📤 Export Database", callback_data="admin:backup_export")],
+        [InlineKeyboardButton("📥 Import Database", callback_data="admin:backup_import")],
+        [InlineKeyboardButton("📜 Backup Logs", callback_data="admin:backup_logs")],
         [InlineKeyboardButton("⚙ Auto Backup", callback_data="admin:backup_auto")],
         [InlineKeyboardButton("⬅ Back", callback_data="admin:home")],
     ])
@@ -45,11 +59,44 @@ def auto_backup_menu(current):
     def label(value, text):
         return f"✅ {text}" if current == value else text
 
+    keep = get_backup_retention()
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label("off", "OFF"), callback_data="admin:backup_auto_set:off")],
-        [InlineKeyboardButton(label("daily", "Daily"), callback_data="admin:backup_auto_set:daily")],
-        [InlineKeyboardButton(label("weekly", "Weekly"), callback_data="admin:backup_auto_set:weekly")],
-        [InlineKeyboardButton(label("monthly", "Monthly"), callback_data="admin:backup_auto_set:monthly")],
+        [InlineKeyboardButton(label("daily", "Every Day"), callback_data="admin:backup_auto_set:daily")],
+        [InlineKeyboardButton(label("weekly", "Every Week"), callback_data="admin:backup_auto_set:weekly")],
+        [InlineKeyboardButton(label("monthly", "Every Month"), callback_data="admin:backup_auto_set:monthly")],
+        [InlineKeyboardButton(
+            f"Keep Latest: {keep}",
+            callback_data="admin:backup_retention",
+        )],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:backup")],
+    ])
+
+
+def retention_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"Keep {amount}",
+            callback_data=f"admin:backup_retention_set:{amount}",
+        ) for amount in (3, 5, 10)],
+        [InlineKeyboardButton(
+            "Keep 20", callback_data="admin:backup_retention_set:20"
+        )],
+        [InlineKeyboardButton("⬅ Auto Backup", callback_data="admin:backup_auto")],
+    ])
+
+
+def export_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "📤 database.db", callback_data="admin:backup_export_db"
+        )],
+        [InlineKeyboardButton(
+            "📦 Database ZIP", callback_data="admin:backup_export_zip"
+        )],
+        [InlineKeyboardButton(
+            "📊 All Tables CSV", callback_data="admin:backup_export_csv"
+        )],
         [InlineKeyboardButton("⬅ Back", callback_data="admin:backup")],
     ])
 
@@ -78,7 +125,7 @@ def export_database_bytes():
         return snapshot.read_bytes()
 
 
-def create_backup(now=None):
+def create_backup(now=None, admin_id=0):
     now = now or datetime.now()
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     base_name = f"backup_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -106,6 +153,7 @@ def create_backup(now=None):
             "backup_info.json",
             json.dumps(info, ensure_ascii=False, indent=2),
         )
+    add_backup_log("created", destination.name, admin_id)
     return destination
 
 
@@ -128,12 +176,54 @@ def get_backup_path(filename):
     return path
 
 
-def delete_backup(filename):
+def delete_backup(filename, admin_id=0):
     path = get_backup_path(filename)
     if not path:
         return False
     path.unlink()
+    add_backup_log("delete", filename, admin_id)
     return True
+
+
+def prune_backups(keep):
+    keep = max(1, int(keep))
+    backups = list_backups(limit=10000)
+    deleted = []
+    for path in backups[keep:]:
+        path.unlink()
+        deleted.append(path.name)
+    return deleted
+
+
+def export_database_zip_bytes():
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("database.db", export_database_bytes())
+    return output.getvalue()
+
+
+def export_database_csv_bytes():
+    output = io.BytesIO()
+    con = connect()
+    try:
+        tables = [
+            row[0] for row in con.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name
+            """).fetchall()
+        ]
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for table in tables:
+                cursor = con.execute(f'SELECT * FROM "{table}"')
+                text = io.StringIO()
+                writer = csv.writer(text, lineterminator="\n")
+                writer.writerow([column[0] for column in cursor.description])
+                writer.writerows(cursor.fetchall())
+                archive.writestr(f"{table}.csv", text.getvalue().encode("utf-8"))
+    finally:
+        con.close()
+    return output.getvalue()
 
 
 def extract_database_bytes(filename, payload):
@@ -175,7 +265,7 @@ def validate_database_bytes(database_bytes):
             raise ValueError("The uploaded database failed validation")
 
 
-def restore_database_bytes(database_bytes):
+def restore_database_bytes(database_bytes, admin_id=0, action="restore", filename=""):
     validate_database_bytes(database_bytes)
     create_backup()
     database_path = Path(DB_PATH).resolve()
@@ -183,6 +273,7 @@ def restore_database_bytes(database_bytes):
     temporary_path.write_bytes(database_bytes)
     os.replace(temporary_path, database_path)
     init_db()
+    add_backup_log(action, filename, admin_id)
 
 
 def format_backup_history(backups):
@@ -225,6 +316,39 @@ def backup_history_menu(backups, delete_only=False):
     return InlineKeyboardMarkup(rows)
 
 
+def backup_restore_menu(backups):
+    rows = [[InlineKeyboardButton(
+        f"♻ {path.name}",
+        callback_data=f"admin:backup_restore_ask:{path.name}",
+    )] for path in backups]
+    rows.append([InlineKeyboardButton("⬅ Back", callback_data="admin:backup")])
+    return InlineKeyboardMarkup(rows)
+
+
+def backup_restore_confirmation(filename):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "✅ YES",
+            callback_data=f"admin:backup_restore_file:{filename}",
+        )],
+        [InlineKeyboardButton("❌ NO", callback_data="admin:backup")],
+    ])
+
+
+def format_backup_logs(logs):
+    if not logs:
+        return "📜 Backup Logs\n\nNo backup activity."
+    lines = ["📜 Backup Logs", ""]
+    for row in logs:
+        lines.append(
+            f"#{row[0]} · {row[1].title()}\n"
+            f"File: {row[2] or '-'}\n"
+            f"Admin: {row[4]}\n"
+            f"Time: {row[5]}"
+        )
+    return "\n\n".join(lines)
+
+
 def backup_delete_confirmation(filename):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
@@ -249,12 +373,17 @@ def run_due_auto_backup(now=None):
     if last_run and now - last_run < interval:
         return None
     backup = create_backup(now)
+    prune_backups(get_backup_retention())
     set_setting("auto_backup_last", now.isoformat(timespec="seconds"))
     return backup
 
 
 async def handle_backup_callback(query, context):
     data = query.data
+
+    if not is_admin_user(query.from_user.id):
+        await query.message.reply_text("⛔ Admin only")
+        return
 
     if data == "admin:backup":
         await query.edit_message_text(
@@ -264,7 +393,7 @@ async def handle_backup_callback(query, context):
         return
 
     if data == "admin:backup_create":
-        backup = create_backup()
+        backup = create_backup(admin_id=query.from_user.id)
         with backup.open("rb") as document:
             await query.message.reply_document(
                 document=document,
@@ -274,17 +403,86 @@ async def handle_backup_callback(query, context):
         return
 
     if data == "admin:backup_export":
+        await query.edit_message_text(
+            "📤 Export Database",
+            reply_markup=export_menu(),
+        )
+        return
+
+    if data == "admin:backup_export_db":
         await query.message.reply_document(
             document=InputFile(export_database_bytes(), filename="database.db"),
             caption="📥 SQLite Database",
         )
         return
 
+    if data == "admin:backup_export_zip":
+        await query.message.reply_document(
+            document=InputFile(
+                export_database_zip_bytes(), filename="database_export.zip"
+            ),
+            caption="📦 Database ZIP",
+        )
+        return
+
+    if data == "admin:backup_export_csv":
+        await query.message.reply_document(
+            document=InputFile(
+                export_database_csv_bytes(), filename="database_csv.zip"
+            ),
+            caption="📊 Database CSV Export",
+        )
+        return
+
     if data == "admin:backup_restore":
-        context.user_data.clear()
-        context.user_data["admin_mode"] = "restore_database"
+        backups = list_backups()
         await query.edit_message_text(
-            "📤 Upload database.db or a backup ZIP.\n"
+            "♻ Select a backup to restore:",
+            reply_markup=backup_restore_menu(backups),
+        )
+        return
+
+    if data.startswith("admin:backup_restore_ask:"):
+        filename = data.split(":", 2)[2]
+        if not get_backup_path(filename):
+            await query.message.reply_text("Backup not found.")
+            return
+        await query.edit_message_text(
+            f"⚠ Restore this backup?\n\n{filename}",
+            reply_markup=backup_restore_confirmation(filename),
+        )
+        return
+
+    if data.startswith("admin:backup_restore_file:"):
+        filename = data.split(":", 2)[2]
+        path = get_backup_path(filename)
+        if not path:
+            await query.message.reply_text("Backup not found.")
+            return
+        try:
+            database_bytes = extract_database_bytes(
+                path.name, path.read_bytes()
+            )
+            restore_database_bytes(
+                database_bytes,
+                admin_id=query.from_user.id,
+                action="restore",
+                filename=filename,
+            )
+        except (ValueError, zipfile.BadZipFile, sqlite3.DatabaseError) as exc:
+            await query.message.reply_text(f"❌ Restore failed: {exc}")
+            return
+        await query.edit_message_text(
+            "✅ Restore completed.",
+            reply_markup=backup_manager_menu(),
+        )
+        return
+
+    if data == "admin:backup_import":
+        context.user_data.clear()
+        context.user_data["admin_mode"] = "import_database"
+        await query.edit_message_text(
+            "📥 Upload database.db or a backup ZIP.\n"
             "The current database will not change until you confirm."
         )
         return
@@ -305,7 +503,14 @@ async def handle_backup_callback(query, context):
                 reply_markup=backup_manager_menu(),
             )
             return
-        restore_database_bytes(payload)
+        source = context.user_data.get("restore_source", "import")
+        filename = context.user_data.get("restore_filename", "")
+        restore_database_bytes(
+            payload,
+            admin_id=query.from_user.id,
+            action=source,
+            filename=filename,
+        )
         context.user_data.clear()
         await query.edit_message_text(
             "✅ Restore completed.",
@@ -321,6 +526,15 @@ async def handle_backup_callback(query, context):
                 backups,
                 delete_only=data == "admin:backup_delete_menu",
             ),
+        )
+        return
+
+    if data == "admin:backup_logs":
+        await query.edit_message_text(
+            format_backup_logs(get_backup_logs()),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅ Back", callback_data="admin:backup")
+            ]]),
         )
         return
 
@@ -350,7 +564,7 @@ async def handle_backup_callback(query, context):
 
     if data.startswith("admin:backup_delete_confirm:"):
         filename = data.split(":", 2)[2]
-        deleted = delete_backup(filename)
+        deleted = delete_backup(filename, query.from_user.id)
         backups = list_backups()
         await query.edit_message_text(
             ("✅ Backup deleted.\n\n" if deleted else "Backup not found.\n\n")
@@ -364,6 +578,30 @@ async def handle_backup_callback(query, context):
         await query.edit_message_text(
             f"⚙ Auto Backup\n\nCurrent: {schedule.title()}",
             reply_markup=auto_backup_menu(schedule),
+        )
+        return
+
+    if data == "admin:backup_retention":
+        await query.edit_message_text(
+            "⚙ Keep latest backups:",
+            reply_markup=retention_menu(),
+        )
+        return
+
+    if data.startswith("admin:backup_retention_set:"):
+        try:
+            keep = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        if keep not in {3, 5, 10, 20}:
+            return
+        set_setting("auto_backup_keep", keep)
+        prune_backups(keep)
+        await query.edit_message_text(
+            f"✅ Keep latest {keep} backups.",
+            reply_markup=auto_backup_menu(
+                get_setting("auto_backup_schedule", "off")
+            ),
         )
         return
 
@@ -381,7 +619,8 @@ async def handle_backup_callback(query, context):
 
 
 async def handle_restore_document(update, context):
-    if context.user_data.get("admin_mode") != "restore_database":
+    mode = context.user_data.get("admin_mode")
+    if mode not in {"restore_database", "import_database"}:
         return False
     document = update.message.document
     try:
@@ -393,6 +632,9 @@ async def handle_restore_document(update, context):
         return True
     context.user_data["restore_payload"] = database_bytes
     context.user_data["restore_filename"] = document.file_name
+    context.user_data["restore_source"] = (
+        "import" if mode == "import_database" else "restore"
+    )
     await update.message.reply_text(
         "⚠ Restore database?",
         reply_markup=restore_confirmation_menu(),

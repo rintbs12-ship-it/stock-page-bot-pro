@@ -198,7 +198,7 @@ def admin_home():
             "📢 Notification Center", callback_data="admin:notify"
         )],
         [InlineKeyboardButton("⚙️ Settings", callback_data="admin:settings"),
-         InlineKeyboardButton("💾 Backup", callback_data="admin:backup")],
+         InlineKeyboardButton("💾 Backup Manager", callback_data="admin:backup")],
         [InlineKeyboardButton("⬅️ Back", callback_data="home")]
     ])
 
