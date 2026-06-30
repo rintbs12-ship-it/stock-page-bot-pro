@@ -21,6 +21,12 @@ from handlers.orders import (
     handle_order_message,
     start_order,
 )
+from handlers.customers import (
+    handle_crm_callback,
+    handle_crm_message,
+    handle_customer_profile_callback,
+    handle_customer_profile_message,
+)
 from keyboards.buttons import (
     admin_home,
     admin_edit_menu,
@@ -71,6 +77,7 @@ from database.db import (
     get_trending_stocks,
     get_stocks_by_range,
     get_user_language,
+    upsert_customer_profile,
     get_setting,
     is_admin_user,
     is_favorite,
@@ -436,6 +443,13 @@ def build_stock_report(stats, report_date=None):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     uid = update.effective_user.id
+    user = update.effective_user
+    upsert_customer_profile(
+        uid,
+        getattr(user, "username", "") or "",
+        getattr(user, "first_name", "") or "",
+        getattr(user, "last_name", "") or "",
+    )
     language = get_user_language(uid)
     logo_file_id = get_setting("bot_logo_file_id", "")
     if logo_file_id:
@@ -479,6 +493,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
+    if data.startswith(("admin:customers", "admin:customer:")):
+        await handle_crm_callback(query, context)
+        return
+
     if data.startswith("admin:backup"):
         await handle_backup_callback(query, context)
         return
@@ -497,6 +515,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_welcome_text(language),
             reply_markup=main_menu(is_admin(uid), language),
         )
+        return
+
+    if data.startswith("profile:"):
+        await handle_customer_profile_callback(query, context)
         return
 
     if data == "language:choose":
@@ -1260,6 +1282,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "Use Admin Panel → Backup → Restore Database first."
             )
+        return
+
+    if is_admin(user_id) and await handle_crm_message(update, context):
+        return
+
+    if await handle_customer_profile_message(update, context):
         return
 
     if is_admin(user_id) and await handle_admin_order_message(update, context):

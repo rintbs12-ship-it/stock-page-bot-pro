@@ -1,4 +1,5 @@
 import sqlite3
+import re
 from datetime import datetime
 from config import DB_PATH
 
@@ -11,6 +12,7 @@ DEFAULT_MENU_ITEMS = (
     ("search", "🔍", "ស្វែងរក Followers", "Search Followers", "search:start", 1, 50),
     ("notify", "🔔", "Notify Me", "Notify Me", "notify:toggle", 1, 60),
     ("orders", "📦", "My Orders", "My Orders", "orders:mine", 1, 70),
+    ("profile", "👤", "My Profile", "My Profile", "profile:view", 1, 75),
     ("language", "🌐", "Language", "Language", "language:choose", 1, 80),
 )
 
@@ -221,6 +223,67 @@ def init_db():
         FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
     )
     """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS customer_profiles (
+        customer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER NOT NULL UNIQUE,
+        username TEXT DEFAULT '',
+        first_name TEXT DEFAULT '',
+        last_name TEXT DEFAULT '',
+        facebook_profile_link TEXT DEFAULT '',
+        default_page_name TEXT DEFAULT '',
+        total_orders INTEGER DEFAULT 0,
+        completed_orders INTEGER DEFAULT 0,
+        cancelled_orders INTEGER DEFAULT 0,
+        total_spent REAL DEFAULT 0,
+        is_vip INTEGER DEFAULT 0,
+        is_banned INTEGER DEFAULT 0,
+        admin_notes TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        updated_at TEXT DEFAULT ''
+    )
+    """)
+    required_customer_columns = {
+        "username": "TEXT DEFAULT ''",
+        "first_name": "TEXT DEFAULT ''",
+        "last_name": "TEXT DEFAULT ''",
+        "facebook_profile_link": "TEXT DEFAULT ''",
+        "default_page_name": "TEXT DEFAULT ''",
+        "total_orders": "INTEGER DEFAULT 0",
+        "completed_orders": "INTEGER DEFAULT 0",
+        "cancelled_orders": "INTEGER DEFAULT 0",
+        "total_spent": "REAL DEFAULT 0",
+        "is_vip": "INTEGER DEFAULT 0",
+        "is_banned": "INTEGER DEFAULT 0",
+        "admin_notes": "TEXT DEFAULT ''",
+        "created_at": "TEXT DEFAULT ''",
+        "updated_at": "TEXT DEFAULT ''",
+    }
+    existing_customer_columns = {
+        row[1]
+        for row in cur.execute("PRAGMA table_info(customer_profiles)").fetchall()
+    }
+    for column, definition in required_customer_columns.items():
+        if column not in existing_customer_columns:
+            cur.execute(
+                f"ALTER TABLE customer_profiles ADD COLUMN {column} {definition}"
+            )
+    cur.execute("""
+        INSERT OR IGNORE INTO customer_profiles (
+            telegram_id, username, created_at, updated_at
+        )
+        SELECT DISTINCT customer_id, customer_username,
+               COALESCE(NULLIF(created_at, ''), datetime('now')),
+               COALESCE(NULLIF(updated_at, ''), datetime('now'))
+        FROM orders
+    """)
+    profile_ids = cur.execute(
+        "SELECT telegram_id FROM customer_profiles"
+    ).fetchall()
+    migration_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for (telegram_id,) in profile_ids:
+        _refresh_customer_stats_cursor(cur, telegram_id, migration_time)
     cur.execute("""
         INSERT INTO order_receipts (order_id, file_id, uploaded_by, created_at)
         SELECT o.order_id, o.receipt_file_id, o.customer_id,
@@ -296,6 +359,14 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_payment_logs_order "
         "ON payment_logs(order_id, id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_profiles_username "
+        "ON customer_profiles(username)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_profiles_facebook "
+        "ON customer_profiles(facebook_profile_link)"
     )
 
     con.commit()
@@ -842,6 +913,15 @@ def create_order(stock_id, customer_id, customer_username, price):
     con = connect()
     cur = con.cursor()
     cur.execute("""
+        INSERT INTO customer_profiles (
+            telegram_id, username, created_at, updated_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(telegram_id) DO UPDATE SET
+            username=CASE WHEN excluded.username<>''
+                THEN excluded.username ELSE customer_profiles.username END,
+            updated_at=excluded.updated_at
+    """, (customer_id, customer_username or "", now, now))
+    cur.execute("""
         INSERT INTO orders (
             stock_id, customer_id, customer_username, price, status,
             created_at, updated_at
@@ -853,6 +933,7 @@ def create_order(stock_id, customer_id, customer_username, price):
             order_id, status, changed_by, note, created_at
         ) VALUES (?, 'waiting_payment', ?, 'Order created', ?)
     """, (order_id, str(customer_id), now))
+    _refresh_customer_stats_cursor(cur, customer_id, now)
     con.commit()
     con.close()
     return order_id
@@ -927,6 +1008,13 @@ def transition_order(
             order_id, new_status, str(changed_by), note,
             now,
         ))
+        if new_status in {"completed", "cancelled"}:
+            customer_row = cur.execute(
+                "SELECT customer_id FROM orders WHERE order_id=?",
+                (order_id,),
+            ).fetchone()
+            if customer_row:
+                _refresh_customer_stats_cursor(cur, customer_row[0], now)
     con.commit()
     con.close()
     return changed
@@ -1084,6 +1172,163 @@ def get_payment_logs(order_id):
     """, (order_id,)).fetchall()
     con.close()
     return rows
+
+
+def _price_number(value):
+    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value or "").replace(",", ""))
+    return float(match.group(0)) if match else 0.0
+
+
+def _refresh_customer_stats_cursor(cur, telegram_id, now=None):
+    now = now or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = cur.execute(
+        "SELECT status, price FROM orders WHERE customer_id=?",
+        (telegram_id,),
+    ).fetchall()
+    completed = [row for row in rows if row[0] == "completed"]
+    cur.execute("""
+        UPDATE customer_profiles
+        SET total_orders=?, completed_orders=?, cancelled_orders=?,
+            total_spent=?, updated_at=?
+        WHERE telegram_id=?
+    """, (
+        len(rows),
+        len(completed),
+        sum(1 for row in rows if row[0] == "cancelled"),
+        sum(_price_number(row[1]) for row in completed),
+        now,
+        telegram_id,
+    ))
+
+
+def upsert_customer_profile(
+    telegram_id, username="", first_name="", last_name="",
+    facebook_profile_link="", default_page_name="",
+):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO customer_profiles (
+            telegram_id, username, first_name, last_name,
+            facebook_profile_link, default_page_name, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(telegram_id) DO UPDATE SET
+            username=CASE WHEN excluded.username<>''
+                THEN excluded.username ELSE customer_profiles.username END,
+            first_name=CASE WHEN excluded.first_name<>''
+                THEN excluded.first_name ELSE customer_profiles.first_name END,
+            last_name=CASE WHEN excluded.last_name<>''
+                THEN excluded.last_name ELSE customer_profiles.last_name END,
+            facebook_profile_link=CASE WHEN excluded.facebook_profile_link<>''
+                THEN excluded.facebook_profile_link
+                ELSE customer_profiles.facebook_profile_link END,
+            default_page_name=CASE WHEN excluded.default_page_name<>''
+                THEN excluded.default_page_name
+                ELSE customer_profiles.default_page_name END,
+            updated_at=excluded.updated_at
+    """, (
+        telegram_id, username or "", first_name or "", last_name or "",
+        facebook_profile_link or "", default_page_name or "", now, now,
+    ))
+    _refresh_customer_stats_cursor(cur, telegram_id, now)
+    con.commit()
+    con.close()
+    return get_customer_profile(telegram_id)
+
+
+def get_customer_profile(telegram_id):
+    con = connect()
+    row = con.execute("""
+        SELECT customer_id, telegram_id, username, first_name, last_name,
+               facebook_profile_link, default_page_name, total_orders,
+               completed_orders, cancelled_orders, total_spent, is_vip,
+               is_banned, admin_notes, created_at, updated_at
+        FROM customer_profiles WHERE telegram_id=?
+    """, (telegram_id,)).fetchone()
+    con.close()
+    return row
+
+
+def update_customer_profile_field(telegram_id, field, value):
+    if field not in {"facebook_profile_link", "default_page_name", "admin_notes"}:
+        return False
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        f"UPDATE customer_profiles SET {field}=?, updated_at=? "
+        "WHERE telegram_id=?",
+        (value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), telegram_id),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def list_customers(limit=50):
+    con = connect()
+    rows = con.execute("""
+        SELECT customer_id, telegram_id, username, first_name, last_name,
+               facebook_profile_link, default_page_name, total_orders,
+               completed_orders, cancelled_orders, total_spent, is_vip,
+               is_banned, admin_notes, created_at, updated_at
+        FROM customer_profiles ORDER BY updated_at DESC LIMIT ?
+    """, (limit,)).fetchall()
+    con.close()
+    return rows
+
+
+def search_customers(search_type, value, limit=50):
+    fields = {
+        "telegram": ("telegram_id=?", int),
+        "username": ("LOWER(username) LIKE LOWER(?)", str),
+        "facebook": ("LOWER(facebook_profile_link) LIKE LOWER(?)", str),
+    }
+    field = fields.get(search_type)
+    if not field:
+        return []
+    clause, converter = field
+    try:
+        value = converter(value)
+    except (TypeError, ValueError):
+        return []
+    if search_type != "telegram":
+        value = f"%{str(value).lstrip('@')}%"
+    con = connect()
+    rows = con.execute(f"""
+        SELECT customer_id, telegram_id, username, first_name, last_name,
+               facebook_profile_link, default_page_name, total_orders,
+               completed_orders, cancelled_orders, total_spent, is_vip,
+               is_banned, admin_notes, created_at, updated_at
+        FROM customer_profiles WHERE {clause}
+        ORDER BY updated_at DESC LIMIT ?
+    """, (value, limit)).fetchall()
+    con.close()
+    return rows
+
+
+def toggle_customer_flag(telegram_id, field):
+    if field not in {"is_vip", "is_banned"}:
+        return None
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        f"UPDATE customer_profiles SET {field}=CASE WHEN {field}=1 THEN 0 ELSE 1 END, "
+        "updated_at=? WHERE telegram_id=?",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), telegram_id),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    if not changed:
+        return None
+    return bool(get_customer_profile(telegram_id)[11 if field == "is_vip" else 12])
+
+
+def is_customer_banned(telegram_id):
+    profile = get_customer_profile(telegram_id)
+    return bool(profile and profile[12])
 
 
 def get_customer_orders(customer_id, limit=20):

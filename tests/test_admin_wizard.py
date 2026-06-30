@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock
 from database import db
 from handlers import backup
 from handlers import settings
+from handlers.customers import (
+    handle_crm_callback,
+    profile_text,
+)
 from handlers.orders import (
     format_order,
     handle_admin_order_callback,
@@ -79,13 +83,14 @@ class AdminWizardTests(unittest.TestCase):
                 ))
                 self.assertEqual(
                     [len(row) for row in menu.inline_keyboard],
-                    [2, 2, 2, 2, 2, 2, 1, 1],
+                    [2, 2, 2, 2, 2, 2, 1, 1, 1],
                 )
                 self.assertTrue({
                     "range:1:5", "range:6:10", "range:11:20", "range:21:30",
                     "range:31:50", "range:51:100", "special:featured",
                     "special:promotion", "contact", "search:start",
                     "language:choose", "notify:toggle", "orders:mine",
+                    "profile:view",
                 }.issubset(set(callbacks)))
                 self.assertTrue({
                     "advanced:home", "favorites:list", "trending:list",
@@ -111,6 +116,7 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:stats",
                 "admin:analytics",
                 "admin:order_manager",
+                "admin:customers",
                 "admin:settings",
                 "admin:backup",
                 "home",
@@ -530,14 +536,15 @@ class AdminWizardTests(unittest.TestCase):
             try:
                 db.init_db()
                 items = db.get_menu_items()
-                self.assertEqual(len(items), 8)
+                self.assertEqual(len(items), 9)
                 self.assertEqual(
                     [(item[1], item[2]) for item in items],
                     [
                         ("🔥", "ផុសថ្មី"), ("⭐", "ពិសេស"),
                         ("💰", "ប្រូម៉ូសិន"), ("📞", "ទាក់ទង"),
                         ("🔍", "ស្វែងរក Followers"), ("🔔", "Notify Me"),
-                        ("📦", "My Orders"), ("🌐", "Language"),
+                        ("📦", "My Orders"), ("👤", "My Profile"),
+                        ("🌐", "Language"),
                     ],
                 )
 
@@ -748,6 +755,70 @@ class AdminWizardTests(unittest.TestCase):
                 self.assertEqual(history[-1], "completed")
                 self.assertIn("payment_confirmed", history)
                 self.assertFalse(db.delete_stock(stock_id))
+                profile = db.get_customer_profile(700)
+                self.assertEqual(profile[7:11], (1, 1, 0, 50.0))
+            finally:
+                db.DB_PATH = old_path
+
+    def test_create_update_and_view_customer_profile(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "customer-profile.db")
+            try:
+                db.init_db()
+                profile = db.upsert_customer_profile(
+                    700, "buyer", "First", "Last"
+                )
+                self.assertEqual(profile[1:5], (
+                    700, "buyer", "First", "Last"
+                ))
+                self.assertTrue(db.update_customer_profile_field(
+                    700, "facebook_profile_link",
+                    "https://facebook.com/buyer",
+                ))
+                self.assertTrue(db.update_customer_profile_field(
+                    700, "default_page_name", "Buyer Page"
+                ))
+                profile = db.get_customer_profile(700)
+                customer_view = profile_text(profile)
+                self.assertIn("https://facebook.com/buyer", customer_view)
+                self.assertIn("Buyer Page", customer_view)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_admin_customer_search_vip_ban_and_private_notes(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "customer-crm.db")
+            try:
+                db.init_db()
+                db.upsert_customer_profile(
+                    700, "specialbuyer", "First", "Last",
+                    facebook_profile_link="https://facebook.com/special",
+                )
+                self.assertEqual(
+                    db.search_customers("telegram", "700")[0][1], 700
+                )
+                self.assertEqual(
+                    db.search_customers("username", "special")[0][1], 700
+                )
+                self.assertEqual(
+                    db.search_customers("facebook", "facebook.com")[0][1],
+                    700,
+                )
+                self.assertTrue(db.toggle_customer_flag(700, "is_vip"))
+                self.assertTrue(db.toggle_customer_flag(700, "is_banned"))
+                self.assertTrue(db.is_customer_banned(700))
+                self.assertFalse(db.toggle_customer_flag(700, "is_banned"))
+                self.assertFalse(db.is_customer_banned(700))
+                db.update_customer_profile_field(
+                    700, "admin_notes", "Private CRM note"
+                )
+                profile = db.get_customer_profile(700)
+                self.assertNotIn("Private CRM note", profile_text(profile))
+                self.assertIn(
+                    "Private CRM note", profile_text(profile, admin=True)
+                )
             finally:
                 db.DB_PATH = old_path
 
@@ -974,6 +1045,49 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_banned_customer_cannot_create_order(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "banned-order.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                db.upsert_customer_profile(700, "buyer")
+                db.toggle_customer_flag(700, "is_banned")
+                message = SimpleNamespace(
+                    reply_text=AsyncMock(), reply_photo=AsyncMock()
+                )
+                query = SimpleNamespace(
+                    from_user=SimpleNamespace(
+                        id=700, username="buyer",
+                        first_name="Buyer", last_name="",
+                    ),
+                    message=message,
+                )
+                context = SimpleNamespace(user_data={})
+                await start_order(query, context, stock_id)
+                self.assertEqual(db.get_customer_orders(700), [])
+                self.assertIn(
+                    "restricted", message.reply_text.await_args.args[0]
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_non_admin_cannot_access_customer_crm(self):
+        query = SimpleNamespace(
+            data="admin:customers",
+            from_user=SimpleNamespace(id=700),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        context = SimpleNamespace(user_data={})
+        self.assertTrue(await handle_crm_callback(query, context))
+        self.assertIn(
+            "Admin only", query.message.reply_text.await_args.args[0]
+        )
+
     async def test_non_admin_cannot_approve_payment(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:

@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from database.db import (
     create_order,
     get_customer_action_order,
+    get_customer_profile,
     get_customer_orders,
     get_active_orders,
     get_all_orders,
@@ -18,12 +19,14 @@ from database.db import (
     get_setting,
     get_stock,
     is_admin_user,
+    is_customer_banned,
     list_admins,
     save_order_receipt,
     search_orders,
     transition_order,
     update_order_field,
     update_stock_field,
+    upsert_customer_profile,
     verify_payment,
 )
 
@@ -95,8 +98,8 @@ def payment_buttons(order_id):
     ])
 
 
-def admin_receipt_buttons(order_id, stock_id):
-    return InlineKeyboardMarkup([
+def admin_receipt_buttons(order_id, stock_id, customer_id=None):
+    rows = [
         [InlineKeyboardButton(
             "✅ Approve Payment",
             callback_data=f"admin:payment_approve:{order_id}",
@@ -111,7 +114,13 @@ def admin_receipt_buttons(order_id, stock_id):
             "📦 View Order",
             callback_data=f"admin:order_manager_view:{order_id}",
         )],
-    ])
+    ]
+    if customer_id is not None:
+        rows.append([InlineKeyboardButton(
+            "👤 Customer Profile",
+            callback_data=f"admin:customer:view:{customer_id}",
+        )])
+    return InlineKeyboardMarkup(rows)
 
 
 def rejection_reason_buttons(order_id):
@@ -268,6 +277,10 @@ def order_manager_detail_keyboard(order):
                               callback_data=f"admin:order_workflow:complete:{order[0]}")],
         [InlineKeyboardButton("❌ Cancel Order",
                               callback_data=f"admin:order_workflow:cancel:{order[0]}")],
+        [InlineKeyboardButton(
+            "👤 Customer Profile",
+            callback_data=f"admin:customer:view:{order[2]}",
+        )],
     ]
     if order[8]:
         rows.append([InlineKeyboardButton(
@@ -449,12 +462,43 @@ async def start_order(query, context, stock_id):
         await query.message.reply_text("This stock is not available.")
         return
     user = query.from_user
+    profile = upsert_customer_profile(
+        user.id,
+        getattr(user, "username", "") or "",
+        getattr(user, "first_name", "") or "",
+        getattr(user, "last_name", "") or "",
+    )
+    if is_customer_banned(user.id):
+        await query.message.reply_text(
+            "🚫 Your account is restricted.\nPlease contact admin."
+        )
+        return
     order_id = create_order(
         stock_id,
         user.id,
         user.username or "",
         stock[4],
     )
+    if profile and profile[11]:
+        await _send_to_admins(
+            context,
+            "⭐ VIP Customer\n\n"
+            f"New Order #{order_id}\n"
+            f"Stock #{stock_id}\n"
+            f"Customer: @{getattr(user, 'username', '') or user.id}\n"
+            f"Telegram ID: {user.id}\n"
+            f"Amount: {stock[4]}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "📦 View Order",
+                    callback_data=f"admin:order_manager_view:{order_id}",
+                ),
+                InlineKeyboardButton(
+                    "👤 Customer Profile",
+                    callback_data=f"admin:customer:view:{user.id}",
+                ),
+            ]]),
+        )
     text = (
         "💳 Payment\n\n"
         f"Order #{order_id}\n"
@@ -480,6 +524,12 @@ async def start_order(query, context, stock_id):
 async def handle_customer_order_callback(query, context):
     data = query.data
     user_id = query.from_user.id
+    upsert_customer_profile(
+        user_id,
+        getattr(query.from_user, "username", "") or "",
+        getattr(query.from_user, "first_name", "") or "",
+        getattr(query.from_user, "last_name", "") or "",
+    )
 
     if data == "orders:mine":
         orders = get_customer_orders(user_id)
@@ -551,6 +601,11 @@ async def handle_customer_order_callback(query, context):
         return
 
     if data.startswith("order:upload:"):
+        if is_customer_banned(user_id):
+            await query.message.reply_text(
+                "🚫 Your account is restricted.\nPlease contact admin."
+            )
+            return
         if order[5] == "waiting_payment":
             transition_order(order_id, "waiting_receipt", {"waiting_payment"}, user_id)
         elif order[5] != "waiting_receipt":
@@ -906,6 +961,7 @@ async def handle_admin_order_callback(query, context):
         if not order:
             await query.message.reply_text("Order not found.")
             return
+        upsert_customer_profile(order[2], order[3] or "")
         await _replace_callback_message(
             query,
             format_order_manager_detail(order),
@@ -1008,6 +1064,7 @@ async def handle_admin_order_callback(query, context):
         return
 
     if data.startswith("admin:order_view:"):
+        upsert_customer_profile(order[2], order[3] or "")
         await query.edit_message_text(
             format_order(order),
             reply_markup=InlineKeyboardMarkup([[
@@ -1147,6 +1204,12 @@ async def handle_admin_order_message(update, context):
 async def handle_order_message(update, context):
     user_id = update.effective_user.id
     if context.user_data.get("order_mode") == "receipt":
+        if is_customer_banned(user_id):
+            context.user_data.clear()
+            await update.message.reply_text(
+                "🚫 Your account is restricted.\nPlease contact admin."
+            )
+            return True
         order_id = context.user_data.get("order_id")
         order = get_order(order_id)
         if not order or order[2] != user_id or order[5] != "waiting_receipt":
@@ -1166,6 +1229,8 @@ async def handle_order_message(update, context):
             "✅ Receipt uploaded. Please wait for Admin confirmation."
         )
         username = f"@{order[3]}" if order[3] else str(user_id)
+        profile = get_customer_profile(user_id)
+        vip_label = "\n⭐ VIP Customer" if profile and profile[11] else ""
         await _send_to_admins(
             context,
             "🧾 Payment Receipt Review\n\n"
@@ -1174,8 +1239,8 @@ async def handle_order_message(update, context):
             f"Customer: {username}\n"
             f"Telegram ID: {user_id}\n"
             f"Amount: {order[4]}\n"
-            "Status: Waiting Admin Confirm",
-            reply_markup=admin_receipt_buttons(order_id, order[1]),
+            f"Status: Waiting Admin Confirm{vip_label}",
+            reply_markup=admin_receipt_buttons(order_id, order[1], user_id),
             photo=receipt_file_id,
         )
         return True
@@ -1196,6 +1261,13 @@ async def handle_order_message(update, context):
                 order[0], "facebook_profile_link", text,
                 order[5], user_id,
             )
+            upsert_customer_profile(
+                user_id,
+                update.effective_user.username or "",
+                getattr(update.effective_user, "first_name", "") or "",
+                getattr(update.effective_user, "last_name", "") or "",
+                facebook_profile_link=text,
+            )
             await update.message.reply_text(
                 "Please send the new Page Name you want."
             )
@@ -1208,6 +1280,13 @@ async def handle_order_message(update, context):
         update_order_field(
             order[0], "requested_page_name", text,
             order[5], user_id,
+        )
+        upsert_customer_profile(
+            user_id,
+            update.effective_user.username or "",
+            getattr(update.effective_user, "first_name", "") or "",
+            getattr(update.effective_user, "last_name", "") or "",
+            default_page_name=text,
         )
         transition_order(
             order[0],
@@ -1224,7 +1303,12 @@ async def handle_order_message(update, context):
             f"Order #{order[0]}\n"
             f"Stock #{order[1]}\n"
             f"Customer Facebook:\n{order[6]}\n\n"
-            f"Requested Page Name:\n{text}",
+            f"Requested Page Name:\n{text}"
+            + (
+                "\n\n⭐ VIP Customer"
+                if (get_customer_profile(user_id) or [None] * 12)[11]
+                else ""
+            ),
             reply_markup=admin_processing_buttons(order[0], user_id),
         )
         return True
