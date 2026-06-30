@@ -10,6 +10,7 @@ from database.db import (
     get_all_orders,
     get_order,
     get_order_history,
+    get_order_timestamps,
     get_orders_by_group,
     filter_orders,
     get_setting,
@@ -23,31 +24,55 @@ from database.db import (
 
 
 STATUS_DISPLAY = {
-    "waiting_payment": "🟡 Pending Payment",
-    "waiting_receipt": "🟡 Pending Payment",
-    "waiting_admin_confirm": "🟡 Pending Payment",
-    "payment_confirmed": "🟢 Payment Received",
-    "waiting_customer_info": "🔵 Waiting Customer Info",
-    "admin_processing": "🟣 Processing",
-    "admin_added": "👑 Admin Added",
-    "waiting_customer_accept": "📩 Waiting Customer Accept",
-    "customer_accepted": "📩 Customer Accepted",
-    "waiting_remove_admin": "🧹 Waiting Remove Admin",
+    "waiting_payment": "🟡 Waiting Payment",
+    "waiting_receipt": "🟡 Waiting Payment",
+    "waiting_admin_confirm": "🟡 Waiting Payment",
+    "payment_confirmed": "🔵 Payment Received",
+    "waiting_customer_info": "🔵 Payment Received",
+    "admin_processing": "🟠 Processing",
+    "admin_added": "🟣 Admin Added",
+    "waiting_customer_accept": "🟢 Waiting Customer Accept",
+    "customer_accepted": "🟢 Customer Accepted",
+    "waiting_remove_admin": "⚪ Waiting Remove Admin",
     "completed": "✅ Completed",
     "cancelled": "❌ Cancelled",
 }
 
 MANAGER_STATUSES = (
-    ("waiting_payment", "🟡 Pending Payment"),
-    ("payment_confirmed", "🟢 Payment Received"),
-    ("waiting_customer_info", "🔵 Waiting Customer Info"),
-    ("admin_processing", "🟣 Processing"),
-    ("admin_added", "👑 Admin Added"),
-    ("waiting_customer_accept", "📩 Waiting Customer Accept"),
-    ("waiting_remove_admin", "🧹 Waiting Remove Admin"),
+    ("waiting_payment", "🟡 Waiting Payment"),
+    ("payment_confirmed", "🔵 Payment Received"),
+    ("waiting_customer_info", "🔵 Customer Info"),
+    ("admin_processing", "🟠 Processing"),
+    ("admin_added", "🟣 Admin Added"),
+    ("waiting_customer_accept", "🟢 Waiting Customer Accept"),
+    ("waiting_remove_admin", "⚪ Waiting Remove Admin"),
     ("completed", "✅ Completed"),
     ("cancelled", "❌ Cancelled"),
 )
+
+CUSTOMER_TIMELINE = (
+    ("waiting_payment", "🟡 Waiting Payment"),
+    ("payment_confirmed", "🔵 Payment Received"),
+    ("admin_processing", "🟠 Processing"),
+    ("admin_added", "🟣 Admin Added"),
+    ("waiting_customer_accept", "🟢 Waiting Customer Accept"),
+    ("waiting_remove_admin", "⚪ Waiting Remove Admin"),
+    ("completed", "✅ Completed"),
+)
+
+STATUS_PROGRESS = {
+    "waiting_payment": 0,
+    "waiting_receipt": 0,
+    "waiting_admin_confirm": 0,
+    "payment_confirmed": 1,
+    "waiting_customer_info": 1,
+    "admin_processing": 2,
+    "admin_added": 3,
+    "waiting_customer_accept": 4,
+    "customer_accepted": 4,
+    "waiting_remove_admin": 5,
+    "completed": 6,
+}
 
 
 def payment_buttons(order_id):
@@ -197,10 +222,20 @@ def order_status_menu(order_id):
 
 def order_manager_detail_keyboard(order):
     rows = [
-        [InlineKeyboardButton(
-            "🔄 Change Status",
-            callback_data=f"admin:order_status_menu:{order[0]}",
-        )],
+        [InlineKeyboardButton("💰 Payment Received",
+                              callback_data=f"admin:order_workflow:payment:{order[0]}")],
+        [InlineKeyboardButton("⚙ Start Processing",
+                              callback_data=f"admin:order_workflow:processing:{order[0]}")],
+        [InlineKeyboardButton("👤 Admin Added",
+                              callback_data=f"admin:order_workflow:admin_added:{order[0]}")],
+        [InlineKeyboardButton("✅ Customer Accepted",
+                              callback_data=f"admin:order_workflow:customer_accept:{order[0]}")],
+        [InlineKeyboardButton("🚪 Remove Admin",
+                              callback_data=f"admin:order_workflow:remove_admin:{order[0]}")],
+        [InlineKeyboardButton("✔ Complete",
+                              callback_data=f"admin:order_workflow:complete:{order[0]}")],
+        [InlineKeyboardButton("❌ Cancel Order",
+                              callback_data=f"admin:order_workflow:cancel:{order[0]}")],
     ]
     if order[8]:
         rows.append([InlineKeyboardButton(
@@ -219,14 +254,7 @@ def order_manager_detail_keyboard(order):
 
 def format_order_manager_detail(order):
     history = get_order_history(order[0])
-    payment_time = next(
-        (entry[5] for entry in history if entry[2] == "payment_confirmed"),
-        "Not recorded",
-    )
-    completion_time = next(
-        (entry[5] for entry in history if entry[2] == "completed"),
-        "Not completed",
-    )
+    timestamps = get_order_timestamps(order[0]) or {}
     timeline = "\n".join(
         f"• {STATUS_DISPLAY.get(entry[2], entry[2])}\n  {entry[5]}"
         for entry in history
@@ -240,11 +268,16 @@ def format_order_manager_detail(order):
         f"Price: {order[4]}\n"
         f"Current Status: {STATUS_DISPLAY.get(order[5], order[5])}\n"
         f"Created Time: {order[9]}\n\n"
-        f"Payment Time: {payment_time}\n"
+        f"Payment Time: {timestamps.get('payment_at') or 'Not recorded'}\n"
+        f"Processing Time: {timestamps.get('processing_at') or 'Not recorded'}\n"
+        f"Admin Added Time: {timestamps.get('admin_added_at') or 'Not recorded'}\n"
+        f"Accepted Time: {timestamps.get('accepted_at') or 'Not recorded'}\n"
+        f"Remove Admin Time: {timestamps.get('removed_admin_at') or 'Not recorded'}\n"
         f"Facebook: {order[6] or 'Not provided'}\n"
         f"Page Name: {order[7] or 'Not provided'}\n"
         f"Receipt: {'Uploaded' if order[8] else 'Not uploaded'}\n"
-        f"Completion Time: {completion_time}\n\n"
+        f"Completion Time: {timestamps.get('completed_at') or 'Not completed'}\n"
+        f"Cancelled Time: {timestamps.get('cancelled_at') or 'Not cancelled'}\n\n"
         f"Status Timeline:\n{timeline or 'No history'}"
     )
 
@@ -268,7 +301,7 @@ def customer_remove_admin_button(order_id):
 def order_history_keyboard(orders, admin=False):
     prefix = "admin:order_view" if admin else "order:view"
     rows = [[InlineKeyboardButton(
-        f"Order #{order[0]} · {order[5]}",
+        f"Order #{order[0]} · {STATUS_DISPLAY.get(order[5], order[5])}",
         callback_data=f"{prefix}:{order[0]}",
     )] for order in orders]
     rows.append([InlineKeyboardButton(
@@ -279,15 +312,31 @@ def order_history_keyboard(orders, admin=False):
 
 
 def format_order(order):
-    username = f"@{order[3]}" if order[3] else str(order[2])
+    current_progress = STATUS_PROGRESS.get(order[5], -1)
+    timeline = []
+    for index, (_, label) in enumerate(CUSTOMER_TIMELINE):
+        marker = "✔" if index <= current_progress else "⬜"
+        timeline.append(f"{marker} {label}")
+    if order[5] == "cancelled":
+        timeline.append("❌ Cancelled ✔")
     return (
         f"📦 Order #{order[0]}\n\n"
         f"Stock #{order[1]}\n"
-        f"Customer: {username}\n"
-        f"Amount: {order[4]}\n"
-        f"Status: {order[5]}\n"
-        f"Created: {order[9]}"
+        f"Price: {order[4]}\n"
+        f"Status: {STATUS_DISPLAY.get(order[5], order[5])}\n\n"
+        "Timeline\n\n"
+        + "\n".join(timeline)
     )
+
+
+def customer_order_detail_keyboard(order_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "🔄 Refresh Order",
+            callback_data=f"order:refresh:{order_id}",
+        )],
+        [InlineKeyboardButton("⬅ My Orders", callback_data="orders:mine")],
+    ])
 
 
 async def _replace_callback_message(query, text, reply_markup=None):
@@ -429,12 +478,10 @@ async def handle_customer_order_callback(query, context):
         )
         return
 
-    if data.startswith("order:view:"):
+    if data.startswith("order:view:") or data.startswith("order:refresh:"):
         await query.edit_message_text(
             format_order(order),
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅ My Orders", callback_data="orders:mine")
-            ]]),
+            reply_markup=customer_order_detail_keyboard(order_id),
         )
         return
 
@@ -578,6 +625,80 @@ async def handle_admin_order_callback(query, context):
         await query.edit_message_text(
             f"🎯 {filter_name.title()} Orders\n\n{len(orders)} order(s)",
             reply_markup=order_manager_list_keyboard(orders),
+        )
+        return
+
+    if data.startswith("admin:order_workflow:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            await query.message.reply_text("Invalid order action.")
+            return
+        action = parts[2]
+        try:
+            order_id = int(parts[3])
+        except ValueError:
+            await query.message.reply_text("Invalid order.")
+            return
+        order = get_order(order_id)
+        workflow = {
+            "payment": (
+                "payment_confirmed",
+                {"waiting_payment", "waiting_receipt", "waiting_admin_confirm"},
+            ),
+            "processing": (
+                "admin_processing",
+                {"payment_confirmed", "waiting_customer_info"},
+            ),
+            "admin_added": ("admin_added", {"admin_processing"}),
+            "customer_accept": (
+                "waiting_customer_accept", {"admin_added"},
+            ),
+            "remove_admin": (
+                "waiting_remove_admin",
+                {"waiting_customer_accept", "customer_accepted"},
+            ),
+            "complete": ("completed", {"waiting_remove_admin"}),
+            "cancel": (
+                "cancelled",
+                {
+                    "waiting_payment", "waiting_receipt",
+                    "waiting_admin_confirm", "payment_confirmed",
+                    "waiting_customer_info", "admin_processing",
+                    "admin_added", "waiting_customer_accept",
+                    "customer_accepted", "waiting_remove_admin",
+                },
+            ),
+        }
+        target = workflow.get(action)
+        if not order or not target:
+            await query.message.reply_text("Order action not found.")
+            return
+        new_status, expected = target
+        changed = transition_order(
+            order_id,
+            new_status,
+            expected,
+            changed_by=query.from_user.id,
+            note=f"Admin workflow: {action}",
+        )
+        if not changed:
+            await query.message.reply_text(
+                "This status change is invalid or was already completed."
+            )
+            return
+        notification, markup = status_customer_notification(
+            new_status, order_id,
+        )
+        notified = await _send_to_customer(
+            context, order[2], notification, reply_markup=markup,
+        )
+        if new_status == "completed":
+            update_stock_field(order[1], "status", "sold")
+        updated_order = get_order(order_id)
+        await query.edit_message_text(
+            format_order_manager_detail(updated_order)
+            + ("" if notified else "\n\n⚠️ Customer notification failed."),
+            reply_markup=order_manager_detail_keyboard(updated_order),
         )
         return
 
@@ -779,7 +900,7 @@ async def handle_admin_order_callback(query, context):
         changed = transition_order(
             order_id,
             "completed",
-            {"customer_accepted", "waiting_remove_admin"},
+            {"waiting_remove_admin"},
         )
         if changed:
             update_stock_field(order[1], "status", "sold")
@@ -815,19 +936,25 @@ async def handle_admin_order_callback(query, context):
 
 def status_customer_notification(status, order_id):
     messages = {
-        "waiting_payment": "🟡 Your order is pending payment.",
-        "payment_confirmed": "✅ Payment received.",
+        "waiting_payment": "🟡 Waiting for payment.",
+        "payment_confirmed": (
+            "💰 Payment received.\n\n"
+            "Your order is ready for processing."
+        ),
         "waiting_customer_info": "👤 Please send your Facebook account link.",
-        "admin_processing": "🟣 Your order is being processed.",
-        "admin_added": "👑 Admin has been added.",
+        "admin_processing": "🟠 Your order is now being processed.",
+        "admin_added": (
+            "👤 Admin has been added.\n\n"
+            "Please check your Facebook page."
+        ),
         "waiting_customer_accept": (
-            "👑 Your page has been transferred.\nPlease verify everything."
+            "✅ Please accept the page invitation."
         ),
         "waiting_remove_admin": (
-            '🧹 If everything is OK,\npress "Remove Admin".'
+            "🚪 Please remove our admin account after verification."
         ),
         "completed": (
-            "🎉 Order completed.\nThank you for choosing RS SERVICE."
+            "🎉 Order completed.\n\nThank you for your purchase."
         ),
         "cancelled": f"❌ Order #{order_id} was cancelled.",
     }

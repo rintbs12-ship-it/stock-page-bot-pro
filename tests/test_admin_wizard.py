@@ -11,7 +11,10 @@ from database import db
 from handlers import backup
 from handlers import settings
 from handlers.orders import (
+    format_order,
+    handle_admin_order_callback,
     handle_customer_order_callback,
+    order_manager_detail_keyboard,
     order_manager_menu,
     order_status_menu,
     start_order,
@@ -721,7 +724,10 @@ class AdminWizardTests(unittest.TestCase):
                     order_id, "customer_accepted", {"admin_added"}, customer_id=700
                 ))
                 self.assertTrue(db.transition_order(
-                    order_id, "completed", {"customer_accepted"}
+                    order_id, "waiting_remove_admin", {"customer_accepted"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "completed", {"waiting_remove_admin"}
                 ))
                 db.update_stock_field(stock_id, "status", "sold")
                 order = db.get_order(order_id)
@@ -775,8 +781,115 @@ class AdminWizardTests(unittest.TestCase):
             "admin:order_status:12:cancelled",
         }.issubset(status_callbacks))
 
+    def test_customer_timeline_and_admin_workflow_buttons(self):
+        order = (
+            25, 15, 700, "buyer", "$35", "admin_processing",
+            "", "", "", "2026-01-01 10:00:00", "2026-01-01 10:05:00",
+        )
+        detail = format_order(order)
+        self.assertIn("Order #25", detail)
+        self.assertIn("✔ 🟡 Waiting Payment", detail)
+        self.assertIn("✔ 🔵 Payment Received", detail)
+        self.assertIn("✔ 🟠 Processing", detail)
+        self.assertIn("⬜ 🟣 Admin Added", detail)
+        callbacks = {
+            button.callback_data
+            for row in order_manager_detail_keyboard(order).inline_keyboard
+            for button in row
+            if button.callback_data
+        }
+        self.assertTrue({
+            "admin:order_workflow:payment:25",
+            "admin:order_workflow:processing:25",
+            "admin:order_workflow:admin_added:25",
+            "admin:order_workflow:customer_accept:25",
+            "admin:order_workflow:remove_admin:25",
+            "admin:order_workflow:complete:25",
+            "admin:order_workflow:cancel:25",
+        }.issubset(callbacks))
+
+    def test_order_timestamp_migration_and_invalid_transitions(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "order-timestamps.db")
+            try:
+                db.init_db()
+                db.init_db()
+                con = db.connect()
+                columns = {
+                    row[1] for row in con.execute(
+                        "PRAGMA table_info(orders)"
+                    ).fetchall()
+                }
+                con.close()
+                self.assertTrue({
+                    "payment_at", "processing_at", "admin_added_at",
+                    "accepted_at", "removed_admin_at", "completed_at",
+                    "cancelled_at",
+                }.issubset(columns))
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 700, "buyer", "$25")
+                self.assertFalse(db.transition_order(
+                    order_id, "completed", {"waiting_payment"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "payment_confirmed", {"waiting_payment"}
+                ))
+                payment_at = db.get_order_timestamps(order_id)["payment_at"]
+                self.assertTrue(payment_at)
+                self.assertFalse(db.transition_order(
+                    order_id, "payment_confirmed", {"waiting_payment"}
+                ))
+                self.assertEqual(
+                    db.get_order_timestamps(order_id)["payment_at"],
+                    payment_at,
+                )
+            finally:
+                db.DB_PATH = old_path
+
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_status_change_notifies_once_and_ignores_duplicate(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "workflow-notification.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 900, "buyer", "$25")
+                message = SimpleNamespace(reply_text=AsyncMock())
+                query = SimpleNamespace(
+                    data=f"admin:order_workflow:payment:{order_id}",
+                    from_user=SimpleNamespace(id=619658883),
+                    message=message,
+                    edit_message_text=AsyncMock(),
+                )
+                context = SimpleNamespace(
+                    user_data={},
+                    bot=SimpleNamespace(send_message=AsyncMock()),
+                )
+
+                await handle_admin_order_callback(query, context)
+                self.assertEqual(
+                    db.get_order(order_id)[5], "payment_confirmed"
+                )
+                self.assertEqual(context.bot.send_message.await_count, 1)
+
+                await handle_admin_order_callback(query, context)
+                self.assertEqual(context.bot.send_message.await_count, 1)
+                self.assertIn(
+                    "invalid or was already completed",
+                    message.reply_text.await_args.args[0],
+                )
+            finally:
+                db.DB_PATH = old_path
+
     async def test_menu_editor_rejects_non_owner_admin(self):
         query = SimpleNamespace(
             data="admin:settings_menu",
@@ -873,7 +986,20 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 )
                 order_id = db.create_order(stock_id, 900, "buyer", "$25")
                 self.assertTrue(db.transition_order(
-                    order_id, "waiting_remove_admin", {"waiting_payment"}
+                    order_id, "payment_confirmed", {"waiting_payment"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "admin_processing", {"payment_confirmed"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "admin_added", {"admin_processing"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_customer_accept", {"admin_added"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_remove_admin",
+                    {"waiting_customer_accept"},
                 ))
                 message = SimpleNamespace(reply_text=AsyncMock())
                 query = SimpleNamespace(

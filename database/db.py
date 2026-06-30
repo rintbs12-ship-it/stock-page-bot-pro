@@ -159,6 +159,33 @@ def init_db():
     )
     """)
 
+    required_order_columns = {
+        "payment_at": "TEXT DEFAULT ''",
+        "processing_at": "TEXT DEFAULT ''",
+        "admin_added_at": "TEXT DEFAULT ''",
+        "accepted_at": "TEXT DEFAULT ''",
+        "removed_admin_at": "TEXT DEFAULT ''",
+        "completed_at": "TEXT DEFAULT ''",
+        "cancelled_at": "TEXT DEFAULT ''",
+    }
+    existing_order_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(orders)").fetchall()
+    }
+    for column, definition in required_order_columns.items():
+        if column not in existing_order_columns:
+            cur.execute(f"ALTER TABLE orders ADD COLUMN {column} {definition}")
+
+    cur.execute("""
+        UPDATE orders
+        SET completed_at=COALESCE(NULLIF(completed_at, ''), updated_at)
+        WHERE status='completed' AND completed_at=''
+    """)
+    cur.execute("""
+        UPDATE orders
+        SET cancelled_at=COALESCE(NULLIF(cancelled_at, ''), updated_at)
+        WHERE status='cancelled' AND cancelled_at=''
+    """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS order_status_history (
         history_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -725,6 +752,43 @@ ORDER_STATUSES = {
     "waiting_remove_admin", "completed", "cancelled",
 }
 
+ORDER_TRANSITIONS = {
+    "waiting_payment": {
+        "waiting_receipt", "payment_confirmed", "cancelled",
+    },
+    "waiting_receipt": {
+        "waiting_admin_confirm", "payment_confirmed", "cancelled",
+    },
+    "waiting_admin_confirm": {
+        "waiting_payment", "payment_confirmed", "cancelled",
+    },
+    "payment_confirmed": {
+        "waiting_customer_info", "admin_processing", "cancelled",
+    },
+    "waiting_customer_info": {"admin_processing", "cancelled"},
+    "admin_processing": {"admin_added", "cancelled"},
+    "admin_added": {
+        "waiting_customer_accept", "customer_accepted", "cancelled",
+    },
+    "waiting_customer_accept": {
+        "customer_accepted", "waiting_remove_admin", "cancelled",
+    },
+    "customer_accepted": {"waiting_remove_admin", "cancelled"},
+    "waiting_remove_admin": {"completed", "cancelled"},
+    "completed": set(),
+    "cancelled": set(),
+}
+
+ORDER_STATUS_TIMESTAMPS = {
+    "payment_confirmed": "payment_at",
+    "admin_processing": "processing_at",
+    "admin_added": "admin_added_at",
+    "customer_accepted": "accepted_at",
+    "waiting_remove_admin": "removed_admin_at",
+    "completed": "completed_at",
+    "cancelled": "cancelled_at",
+}
+
 
 def create_order(stock_id, customer_id, customer_username, price):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -770,13 +834,31 @@ def transition_order(
     expected = tuple(expected_statuses)
     if not expected or any(status not in ORDER_STATUSES for status in expected):
         return False
+    valid_expected = tuple(
+        status for status in expected
+        if new_status in ORDER_TRANSITIONS.get(status, set())
+    )
+    if not valid_expected:
+        return False
+    expected = valid_expected
     placeholders = ",".join("?" for _ in expected)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp_column = ORDER_STATUS_TIMESTAMPS.get(new_status)
+    timestamp_sql = (
+        f", {timestamp_column}=CASE WHEN {timestamp_column}='' "
+        f"THEN ? ELSE {timestamp_column} END"
+        if timestamp_column else ""
+    )
     params = [
         new_status,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        now,
+    ]
+    if timestamp_column:
+        params.append(now)
+    params.extend([
         order_id,
         *expected,
-    ]
+    ])
     owner_clause = ""
     if customer_id is not None:
         owner_clause = " AND customer_id=?"
@@ -784,7 +866,7 @@ def transition_order(
     con = connect()
     cur = con.cursor()
     cur.execute(
-        f"UPDATE orders SET status=?, updated_at=? "
+        f"UPDATE orders SET status=?, updated_at=?{timestamp_sql} "
         f"WHERE order_id=? AND status IN ({placeholders}){owner_clause}",
         params,
     )
@@ -796,11 +878,30 @@ def transition_order(
             ) VALUES (?, ?, ?, ?, ?)
         """, (
             order_id, new_status, str(changed_by), note,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            now,
         ))
     con.commit()
     con.close()
     return changed
+
+
+def get_order_timestamps(order_id):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT created_at, payment_at, processing_at, admin_added_at,
+               accepted_at, removed_admin_at, completed_at, cancelled_at
+        FROM orders WHERE order_id=?
+    """, (order_id,))
+    row = cur.fetchone()
+    con.close()
+    if not row:
+        return None
+    keys = (
+        "created_at", "payment_at", "processing_at", "admin_added_at",
+        "accepted_at", "removed_admin_at", "completed_at", "cancelled_at",
+    )
+    return dict(zip(keys, row))
 
 
 def update_order_field(order_id, field, value, expected_status, customer_id=None):
