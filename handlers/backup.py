@@ -1,0 +1,400 @@
+import io
+import json
+import os
+import re
+import sqlite3
+import tempfile
+import zipfile
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+
+from config import DB_PATH
+from database.db import (
+    get_all_settings,
+    get_setting,
+    init_db,
+    set_setting,
+)
+
+
+BACKUP_DIR = Path(DB_PATH).resolve().parent / "backups"
+BACKUP_NAME_PATTERN = re.compile(r"^backup_\d{8}_\d{6}(?:_\d+)?\.zip$")
+AUTO_BACKUP_INTERVALS = {
+    "off": None,
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+    "monthly": timedelta(days=30),
+}
+
+
+def backup_manager_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 Create Backup", callback_data="admin:backup_create")],
+        [InlineKeyboardButton("📥 Export Database", callback_data="admin:backup_export")],
+        [InlineKeyboardButton("📤 Restore Database", callback_data="admin:backup_restore")],
+        [InlineKeyboardButton("🗑 Delete Backup", callback_data="admin:backup_delete_menu")],
+        [InlineKeyboardButton("📋 Backup History", callback_data="admin:backup_history")],
+        [InlineKeyboardButton("⚙ Auto Backup", callback_data="admin:backup_auto")],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:home")],
+    ])
+
+
+def auto_backup_menu(current):
+    def label(value, text):
+        return f"✅ {text}" if current == value else text
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label("off", "OFF"), callback_data="admin:backup_auto_set:off")],
+        [InlineKeyboardButton(label("daily", "Daily"), callback_data="admin:backup_auto_set:daily")],
+        [InlineKeyboardButton(label("weekly", "Weekly"), callback_data="admin:backup_auto_set:weekly")],
+        [InlineKeyboardButton(label("monthly", "Monthly"), callback_data="admin:backup_auto_set:monthly")],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:backup")],
+    ])
+
+
+def restore_confirmation_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ YES", callback_data="admin:backup_restore_confirm")],
+        [InlineKeyboardButton("❌ NO", callback_data="admin:backup_restore_cancel")],
+    ])
+
+
+def _snapshot_database(destination):
+    source = sqlite3.connect(DB_PATH)
+    target = sqlite3.connect(destination)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+
+
+def export_database_bytes():
+    with tempfile.TemporaryDirectory() as folder:
+        snapshot = Path(folder) / "database.db"
+        _snapshot_database(snapshot)
+        return snapshot.read_bytes()
+
+
+def create_backup(now=None):
+    now = now or datetime.now()
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    base_name = f"backup_{now.strftime('%Y%m%d_%H%M%S')}"
+    destination = BACKUP_DIR / f"{base_name}.zip"
+    suffix = 1
+    while destination.exists():
+        destination = BACKUP_DIR / f"{base_name}_{suffix}.zip"
+        suffix += 1
+
+    database_bytes = export_database_bytes()
+    settings = get_all_settings()
+    info = {
+        "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "database": "database.db",
+        "settings": settings,
+        "format_version": 1,
+    }
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("database.db", database_bytes)
+        archive.writestr(
+            "settings.json",
+            json.dumps(settings, ensure_ascii=False, indent=2),
+        )
+        archive.writestr(
+            "backup_info.json",
+            json.dumps(info, ensure_ascii=False, indent=2),
+        )
+    return destination
+
+
+def list_backups(limit=10):
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backups = [
+        path for path in BACKUP_DIR.iterdir()
+        if path.is_file() and BACKUP_NAME_PATTERN.fullmatch(path.name)
+    ]
+    backups.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return backups[:limit]
+
+
+def get_backup_path(filename):
+    if not BACKUP_NAME_PATTERN.fullmatch(filename):
+        return None
+    path = (BACKUP_DIR / filename).resolve()
+    if path.parent != BACKUP_DIR.resolve() or not path.is_file():
+        return None
+    return path
+
+
+def delete_backup(filename):
+    path = get_backup_path(filename)
+    if not path:
+        return False
+    path.unlink()
+    return True
+
+
+def extract_database_bytes(filename, payload):
+    lower_name = filename.lower()
+    if lower_name == "database.db" or lower_name.endswith(".db"):
+        database_bytes = bytes(payload)
+    elif lower_name.endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+            database_names = [
+                name for name in archive.namelist()
+                if Path(name).name.lower() == "database.db"
+            ]
+            if not database_names:
+                raise ValueError("Backup ZIP does not contain database.db")
+            database_bytes = archive.read(database_names[0])
+    else:
+        raise ValueError("Upload database.db or a backup ZIP")
+    validate_database_bytes(database_bytes)
+    return database_bytes
+
+
+def validate_database_bytes(database_bytes):
+    if not database_bytes.startswith(b"SQLite format 3\x00"):
+        raise ValueError("The uploaded file is not a valid SQLite database")
+    with tempfile.TemporaryDirectory() as folder:
+        candidate = Path(folder) / "candidate.db"
+        candidate.write_bytes(database_bytes)
+        con = sqlite3.connect(candidate)
+        try:
+            result = con.execute("PRAGMA integrity_check").fetchone()[0]
+            tables = {
+                row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        finally:
+            con.close()
+        if result != "ok" or "stocks" not in tables or "stock_photos" not in tables:
+            raise ValueError("The uploaded database failed validation")
+
+
+def restore_database_bytes(database_bytes):
+    validate_database_bytes(database_bytes)
+    create_backup()
+    database_path = Path(DB_PATH).resolve()
+    temporary_path = database_path.with_suffix(".restore.tmp")
+    temporary_path.write_bytes(database_bytes)
+    os.replace(temporary_path, database_path)
+    init_db()
+
+
+def format_backup_history(backups):
+    if not backups:
+        return "📋 Backup History\n\nNo backups found."
+    lines = ["📋 Backup History", ""]
+    for index, path in enumerate(backups, start=1):
+        stat = path.stat()
+        date = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        size = stat.st_size / 1024
+        lines.extend([
+            f"{index}. {path.name}",
+            f"Date: {date}",
+            f"Size: {size:.1f} KB",
+            "",
+        ])
+    return "\n".join(lines).rstrip()
+
+
+def backup_history_menu(backups, delete_only=False):
+    rows = []
+    for path in backups:
+        if delete_only:
+            rows.append([InlineKeyboardButton(
+                f"🗑 {path.name}",
+                callback_data=f"admin:backup_delete_ask:{path.name}",
+            )])
+        else:
+            rows.append([
+                InlineKeyboardButton(
+                    f"📥 {path.name}",
+                    callback_data=f"admin:backup_download:{path.name}",
+                ),
+                InlineKeyboardButton(
+                    "🗑",
+                    callback_data=f"admin:backup_delete_ask:{path.name}",
+                ),
+            ])
+    rows.append([InlineKeyboardButton("⬅ Back", callback_data="admin:backup")])
+    return InlineKeyboardMarkup(rows)
+
+
+def backup_delete_confirmation(filename):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "✅ Delete Backup",
+            callback_data=f"admin:backup_delete_confirm:{filename}",
+        )],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin:backup_history")],
+    ])
+
+
+def run_due_auto_backup(now=None):
+    now = now or datetime.now()
+    schedule = get_setting("auto_backup_schedule", "off")
+    interval = AUTO_BACKUP_INTERVALS.get(schedule)
+    if interval is None:
+        return None
+    last_text = get_setting("auto_backup_last", "")
+    try:
+        last_run = datetime.fromisoformat(last_text)
+    except ValueError:
+        last_run = None
+    if last_run and now - last_run < interval:
+        return None
+    backup = create_backup(now)
+    set_setting("auto_backup_last", now.isoformat(timespec="seconds"))
+    return backup
+
+
+async def handle_backup_callback(query, context):
+    data = query.data
+
+    if data == "admin:backup":
+        await query.edit_message_text(
+            "💾 Backup Manager",
+            reply_markup=backup_manager_menu(),
+        )
+        return
+
+    if data == "admin:backup_create":
+        backup = create_backup()
+        with backup.open("rb") as document:
+            await query.message.reply_document(
+                document=document,
+                filename=backup.name,
+                caption="✅ Backup created.",
+            )
+        return
+
+    if data == "admin:backup_export":
+        await query.message.reply_document(
+            document=InputFile(export_database_bytes(), filename="database.db"),
+            caption="📥 SQLite Database",
+        )
+        return
+
+    if data == "admin:backup_restore":
+        context.user_data.clear()
+        context.user_data["admin_mode"] = "restore_database"
+        await query.edit_message_text(
+            "📤 Upload database.db or a backup ZIP.\n"
+            "The current database will not change until you confirm."
+        )
+        return
+
+    if data == "admin:backup_restore_cancel":
+        context.user_data.clear()
+        await query.edit_message_text(
+            "Restore cancelled.\n\n💾 Backup Manager",
+            reply_markup=backup_manager_menu(),
+        )
+        return
+
+    if data == "admin:backup_restore_confirm":
+        payload = context.user_data.get("restore_payload")
+        if not payload:
+            await query.edit_message_text(
+                "Restore file expired. Upload it again.",
+                reply_markup=backup_manager_menu(),
+            )
+            return
+        restore_database_bytes(payload)
+        context.user_data.clear()
+        await query.edit_message_text(
+            "✅ Restore completed.",
+            reply_markup=backup_manager_menu(),
+        )
+        return
+
+    if data in {"admin:backup_history", "admin:backup_delete_menu"}:
+        backups = list_backups()
+        await query.edit_message_text(
+            format_backup_history(backups),
+            reply_markup=backup_history_menu(
+                backups,
+                delete_only=data == "admin:backup_delete_menu",
+            ),
+        )
+        return
+
+    if data.startswith("admin:backup_download:"):
+        filename = data.split(":", 2)[2]
+        path = get_backup_path(filename)
+        if not path:
+            await query.message.reply_text("Backup not found.")
+            return
+        with path.open("rb") as document:
+            await query.message.reply_document(document=document, filename=path.name)
+        return
+
+    if data.startswith("admin:backup_delete_ask:"):
+        filename = data.split(":", 2)[2]
+        if not get_backup_path(filename):
+            await query.edit_message_text(
+                "Backup not found.",
+                reply_markup=backup_manager_menu(),
+            )
+            return
+        await query.edit_message_text(
+            f"⚠ Delete backup?\n\n{filename}",
+            reply_markup=backup_delete_confirmation(filename),
+        )
+        return
+
+    if data.startswith("admin:backup_delete_confirm:"):
+        filename = data.split(":", 2)[2]
+        deleted = delete_backup(filename)
+        backups = list_backups()
+        await query.edit_message_text(
+            ("✅ Backup deleted.\n\n" if deleted else "Backup not found.\n\n")
+            + format_backup_history(backups),
+            reply_markup=backup_history_menu(backups),
+        )
+        return
+
+    if data == "admin:backup_auto":
+        schedule = get_setting("auto_backup_schedule", "off")
+        await query.edit_message_text(
+            f"⚙ Auto Backup\n\nCurrent: {schedule.title()}",
+            reply_markup=auto_backup_menu(schedule),
+        )
+        return
+
+    if data.startswith("admin:backup_auto_set:"):
+        schedule = data.rsplit(":", 1)[1]
+        if schedule not in AUTO_BACKUP_INTERVALS:
+            return
+        set_setting("auto_backup_schedule", schedule)
+        if schedule == "off":
+            set_setting("auto_backup_last", "")
+        await query.edit_message_text(
+            f"✅ Auto Backup: {schedule.title()}",
+            reply_markup=auto_backup_menu(schedule),
+        )
+
+
+async def handle_restore_document(update, context):
+    if context.user_data.get("admin_mode") != "restore_database":
+        return False
+    document = update.message.document
+    try:
+        telegram_file = await document.get_file()
+        payload = bytes(await telegram_file.download_as_bytearray())
+        database_bytes = extract_database_bytes(document.file_name or "", payload)
+    except (ValueError, zipfile.BadZipFile, sqlite3.DatabaseError) as exc:
+        await update.message.reply_text(f"❌ Restore file rejected: {exc}")
+        return True
+    context.user_data["restore_payload"] = database_bytes
+    context.user_data["restore_filename"] = document.file_name
+    await update.message.reply_text(
+        "⚠ Restore database?",
+        reply_markup=restore_confirmation_menu(),
+    )
+    return True

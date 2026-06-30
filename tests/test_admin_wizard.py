@@ -1,0 +1,641 @@
+import unittest
+import tempfile
+import zipfile
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from database import db
+from handlers import backup
+from handlers import settings
+from handlers.menu import (
+    begin_photo_upload,
+    build_stock_report,
+    customer_stock_text,
+    apply_default_currency,
+    format_statistics_dashboard,
+    get_welcome_text,
+    handle_command,
+    handle_text,
+    normalize_quality,
+    normalize_status,
+    parse_percent,
+    parse_followers_value,
+    save_stock_draft,
+    validate_http_url,
+)
+from keyboards.buttons import (
+    admin_home,
+    country_choices,
+    main_menu,
+    photo_manager_menu,
+    quick_edit_menu,
+    quality_percent_choices,
+    statistics_dashboard_menu,
+    stock_detail,
+)
+from version import PRODUCT_NAME, __version__
+
+
+class AdminWizardTests(unittest.TestCase):
+    def test_production_release_version(self):
+        self.assertEqual(PRODUCT_NAME, "Stock Page Bot Pro")
+        self.assertEqual(__version__, "1.0")
+
+    def test_parse_followers_value_accepts_plain_and_k_suffix(self):
+        self.assertEqual(parse_followers_value("15"), 15)
+        self.assertEqual(parse_followers_value("15K"), 15)
+        with self.assertRaises(ValueError):
+            parse_followers_value("0")
+        with self.assertRaises(ValueError):
+            parse_followers_value("101K")
+
+    def test_customer_menu_has_no_admin_callback(self):
+        menu = main_menu(False)
+        callbacks = [
+            button.callback_data
+            for row in menu.inline_keyboard
+            for button in row
+        ]
+        self.assertFalse(any(value and value.startswith("admin:") for value in callbacks))
+        self.assertEqual(
+            [len(row) for row in menu.inline_keyboard],
+            [2, 2, 2, 2, 2, 2, 2, 2, 1],
+        )
+        self.assertTrue({
+            "range:1:5", "range:6:10", "range:11:20", "range:21:30",
+            "range:31:50", "range:51:100", "special:featured",
+            "special:promotion", "contact", "search:start",
+            "language:choose",
+            "advanced:home", "favorites:list", "trending:list",
+            "filters:home", "notify:toggle",
+        }.issubset(set(callbacks)))
+
+    def test_admin_panel_has_all_required_actions(self):
+        callbacks = {
+            button.callback_data
+            for row in admin_home().inline_keyboard
+            for button in row
+        }
+        self.assertEqual(
+            callbacks,
+            {
+                "admin:add",
+                "admin:manage",
+                "admin:photos",
+                "admin:list:featured",
+                "admin:list:promotion",
+                "admin:stats",
+                "admin:analytics",
+                "admin:settings",
+                "admin:backup",
+                "home",
+            },
+        )
+
+    def test_wizard_choice_validation(self):
+        self.assertEqual(normalize_quality("a+"), "A+")
+        self.assertEqual(normalize_status("Sold"), "sold")
+        with self.assertRaises(ValueError):
+            normalize_quality("excellent")
+        with self.assertRaises(ValueError):
+            normalize_status("pending")
+        self.assertEqual(parse_percent("55%"), 55)
+        with self.assertRaises(ValueError):
+            parse_percent("101")
+        self.assertEqual(validate_http_url("https://facebook.com/page"), "https://facebook.com/page")
+        with self.assertRaises(ValueError):
+            validate_http_url("not-a-link")
+
+    def test_safe_migration_and_language_preference(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "migration.db")
+            try:
+                db.init_db()
+                db.init_db()
+                con = db.connect()
+                columns = {
+                    row[1] for row in con.execute(
+                        "PRAGMA table_info(stocks)"
+                    ).fetchall()
+                }
+                con.close()
+                self.assertTrue({
+                    "female_percent", "male_percent", "quality_percent",
+                    "real_followers", "organic_reach", "monetized",
+                    "no_violation", "ready_transfer", "business_ready",
+                }.issubset(columns))
+                self.assertEqual(db.get_user_language(100), "km")
+                self.assertTrue(db.set_user_language(100, "en"))
+                self.assertEqual(db.get_user_language(100), "en")
+            finally:
+                db.DB_PATH = old_path
+
+    def test_create_stock_persists_all_wizard_fields(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "test.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    25, "Cambodia", "Women", "$125", "A+",
+                    "Test description", "https://facebook.com/test",
+                    "available",
+                )
+                self.assertEqual(
+                    db.get_stock(stock_id)[1:11],
+                    (
+                        25, "Cambodia", "Women", "$125", "A+",
+                        "Test description", "https://facebook.com/test",
+                        "available", 0, 0,
+                    ),
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    def test_stock_detail_is_formatted_in_both_languages(self):
+        row = (
+            7, 15, "Cambodia", "female", "$25", "95%", "", "https://fb.test",
+            "available", 0, 0, "", 55, 45, 95, 1, "high", 1, 1, 1, 1,
+        )
+        khmer = customer_stock_text(row, "km")
+        english = customer_stock_text(row, "en")
+        self.assertIn("ស្រីច្រើន (55%)", khmer)
+        self.assertIn("គុណភាព : 95%", khmer)
+        self.assertIn("Female Audience : 55%", english)
+        self.assertIn("Quality : 95%", english)
+
+    def test_stock_detail_buttons_are_localized(self):
+        khmer_labels = {
+            button.text
+            for row in stock_detail(1, "https://facebook.com", "km").inline_keyboard
+            for button in row
+        }
+        english_labels = {
+            button.text
+            for row in stock_detail(1, "https://facebook.com", "en").inline_keyboard
+            for button in row
+        }
+        self.assertEqual(khmer_labels, {
+            "🖼️ មើលរូបភាព", "🌐 បើកផេក", "📋 ចម្លង Link",
+            "💬 ទាក់ទង Admin", "🛒 ទិញឥឡូវនេះ", "⬅️ ត្រឡប់",
+            "❤️ ចំណូលចិត្ត", "🔔 ជូនដំណឹង", "📤 ចែករំលែក",
+        })
+        self.assertEqual(english_labels, {
+            "🖼️ View Photos", "🌐 Open Page", "📋 Copy Link",
+            "💬 Contact Admin", "🛒 Buy Now", "⬅️ Back",
+            "❤️ Favorite", "🔔 Notify Me", "📤 Share",
+        })
+
+    def test_quick_edit_menu_has_required_actions(self):
+        callbacks = {
+            button.callback_data
+            for row in quick_edit_menu(42).inline_keyboard
+            for button in row
+        }
+        self.assertEqual(callbacks, {
+            "admin:quick_field:42:followers",
+            "admin:quick_field:42:price",
+            "admin:quick_field:42:fb_link",
+            "admin:quick_status:42",
+            "admin:photo_manager:42",
+            "admin:stock:42",
+        })
+
+    def test_photo_manager_has_all_required_actions(self):
+        callbacks = {
+            button.callback_data
+            for row in photo_manager_menu(9).inline_keyboard
+            for button in row
+        }
+        self.assertEqual(callbacks, {
+            "admin:upload:9",
+            "admin:photo_view:9:0",
+            "admin:photo_multi:9",
+            "admin:photo_delete_all:9",
+            "admin:stock:9",
+        })
+
+    def test_unlimited_photo_file_ids_are_persisted_without_duplicates(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "photos.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$10", "A", "", "",
+                    "available",
+                )
+                for number in range(30):
+                    self.assertTrue(db.add_stock_photo(stock_id, f"file-{number}"))
+                self.assertFalse(db.add_stock_photo(stock_id, "file-0"))
+                self.assertEqual(
+                    db.get_stock_photos(stock_id),
+                    [f"file-{number}" for number in range(30)],
+                )
+                records = db.get_stock_photo_records(stock_id)
+                record, index, total = db.get_stock_photo_page(stock_id, 999)
+                self.assertEqual((record, index, total), (records[-1], 29, 30))
+                self.assertTrue(db.delete_stock_photo(stock_id, records[1][0]))
+                selected_ids = [records[3][0], records[5][0]]
+                self.assertEqual(db.delete_stock_photos(stock_id, selected_ids), 2)
+                self.assertEqual(len(db.get_stock_photos(stock_id)), 27)
+                self.assertEqual(db.delete_all_stock_photos(stock_id), 27)
+                self.assertEqual(db.get_stock_photos(stock_id), [])
+                self.assertIsNotNone(db.get_stock(stock_id))
+            finally:
+                db.DB_PATH = old_path
+
+    def test_manage_stock_updates_flags_status_and_deletes_photos(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "manage.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    8, "Cambodia", "All", "$20", "B", "Before",
+                    "https://facebook.com/test", "available",
+                )
+                db.add_stock_photo(stock_id, "photo-1")
+                self.assertTrue(db.update_stock_field(stock_id, "description", "After"))
+                self.assertEqual(db.toggle_stock_flag(stock_id, "featured"), 1)
+                self.assertEqual(db.toggle_stock_flag(stock_id, "promotion"), 1)
+                self.assertTrue(db.update_stock_field(stock_id, "status", "sold"))
+                row = db.get_stock(stock_id)
+                self.assertEqual((row[6], row[8], row[9], row[10]), ("After", "sold", 1, 1))
+                self.assertTrue(db.delete_stock(stock_id))
+                self.assertIsNone(db.get_stock(stock_id))
+                self.assertEqual(db.get_stock_photos(stock_id), [])
+            finally:
+                db.DB_PATH = old_path
+
+    def test_statistics_include_all_required_counts(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "stats.db")
+            try:
+                db.init_db()
+                first = db.create_stock(
+                    5, "Cambodia", "", "$10", "A", "", "",
+                    "available", featured=1,
+                )
+                db.create_stock(
+                    6, "Cambodia", "", "$20", "B", "", "",
+                    "sold", promotion=1,
+                )
+                db.add_stock_photo(first, "photo-a")
+                db.add_stock_photo(first, "photo-b")
+                self.assertEqual(db.get_stock_stats(), (2, 1, 1, 1, 1, 2))
+            finally:
+                db.DB_PATH = old_path
+
+    def test_dashboard_uses_sqlite_aggregates_and_formats_report(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "dashboard.db")
+            try:
+                db.init_db()
+                first = db.create_stock(
+                    3, "Cambodia", "", "$10", "A", "", "",
+                    "available", featured=1,
+                )
+                db.create_stock(
+                    8, "Thailand", "", "$20", "A", "", "",
+                    "sold", promotion=1,
+                )
+                db.create_stock(
+                    55, "Vietnam", "", "$1,000", "A", "", "",
+                    "available",
+                )
+                db.create_stock(
+                    25, "Laos", "", "invalid", "A", "", "",
+                    "available",
+                )
+                db.add_stock_photo(first, "photo-1")
+                stats = db.get_dashboard_stats()
+                self.assertEqual(
+                    (
+                        stats["total"], stats["available"], stats["sold"],
+                        stats["featured"], stats["promotion"], stats["photos"],
+                    ),
+                    (4, 3, 1, 1, 1, 1),
+                )
+                self.assertEqual(stats["categories"], {
+                    "1K–5K": 1, "6K–10K": 1, "11K–20K": 0,
+                    "21K–30K": 1, "31K–50K": 0, "51K–100K": 1,
+                })
+                self.assertEqual(stats["countries"], {
+                    "Cambodia": 1, "Thailand": 1, "Vietnam": 1, "Others": 1,
+                })
+                self.assertEqual(stats["prices"], {
+                    "lowest": 10.0, "highest": 1000.0,
+                    "average": 1030.0 / 3,
+                })
+                dashboard = format_statistics_dashboard(stats)
+                report = build_stock_report(stats, "2026-06-30 10:00:00")
+                self.assertIn("1K–5K : 1", dashboard)
+                self.assertIn("Average Price : $343.33", dashboard)
+                self.assertIn("Date: 2026-06-30 10:00:00", report)
+                self.assertIn("Vietnam: 1", report)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_statistics_dashboard_buttons(self):
+        callbacks = {
+            button.callback_data
+            for row in statistics_dashboard_menu().inline_keyboard
+            for button in row
+        }
+        self.assertEqual(
+            callbacks,
+            {"admin:stats", "admin:stats_export", "admin:home"},
+        )
+
+    def test_backup_create_extract_restore_history_and_delete(self):
+        old_db_path = db.DB_PATH
+        old_backup_db_path = backup.DB_PATH
+        old_backup_dir = backup.BACKUP_DIR
+        with tempfile.TemporaryDirectory() as folder:
+            database_path = Path(folder) / "database.db"
+            db.DB_PATH = str(database_path)
+            backup.DB_PATH = str(database_path)
+            backup.BACKUP_DIR = Path(folder) / "backups"
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    12, "Cambodia", "", "$25", "A", "", "",
+                    "available",
+                )
+                db.add_stock_photo(stock_id, "telegram-photo")
+                db.set_setting("auto_backup_schedule", "weekly")
+                archive = backup.create_backup(
+                    datetime(2026, 6, 30, 12, 30, 45)
+                )
+                self.assertEqual(archive.name, "backup_20260630_123045.zip")
+                with zipfile.ZipFile(archive) as zipped:
+                    self.assertEqual(
+                        set(zipped.namelist()),
+                        {"database.db", "settings.json", "backup_info.json"},
+                    )
+                restored_bytes = backup.extract_database_bytes(
+                    archive.name,
+                    archive.read_bytes(),
+                )
+                db.delete_stock(stock_id)
+                self.assertIsNone(db.get_stock(stock_id))
+                backup.restore_database_bytes(restored_bytes)
+                self.assertIsNotNone(db.get_stock(stock_id))
+                self.assertEqual(
+                    db.get_stock_photos(stock_id),
+                    ["telegram-photo"],
+                )
+                history = backup.list_backups()
+                self.assertGreaterEqual(len(history), 2)
+                self.assertTrue(backup.delete_backup(archive.name))
+                self.assertFalse(backup.delete_backup("../../database.db"))
+            finally:
+                db.DB_PATH = old_db_path
+                backup.DB_PATH = old_backup_db_path
+                backup.BACKUP_DIR = old_backup_dir
+
+    def test_auto_backup_schedule_is_persisted_and_respects_due_time(self):
+        old_db_path = db.DB_PATH
+        old_backup_db_path = backup.DB_PATH
+        old_backup_dir = backup.BACKUP_DIR
+        with tempfile.TemporaryDirectory() as folder:
+            database_path = Path(folder) / "database.db"
+            db.DB_PATH = str(database_path)
+            backup.DB_PATH = str(database_path)
+            backup.BACKUP_DIR = Path(folder) / "backups"
+            try:
+                db.init_db()
+                db.set_setting("auto_backup_schedule", "daily")
+                first = backup.run_due_auto_backup(datetime(2026, 6, 1, 8, 0, 0))
+                second = backup.run_due_auto_backup(datetime(2026, 6, 1, 12, 0, 0))
+                third = backup.run_due_auto_backup(datetime(2026, 6, 2, 8, 0, 0))
+                self.assertIsNotNone(first)
+                self.assertIsNone(second)
+                self.assertIsNotNone(third)
+                self.assertEqual(db.get_setting("auto_backup_schedule"), "daily")
+            finally:
+                db.DB_PATH = old_db_path
+                backup.DB_PATH = old_backup_db_path
+                backup.BACKUP_DIR = old_backup_dir
+
+    def test_backup_manager_has_all_required_buttons(self):
+        callbacks = {
+            button.callback_data
+            for row in backup.backup_manager_menu().inline_keyboard
+            for button in row
+        }
+        self.assertEqual(callbacks, {
+            "admin:backup_create",
+            "admin:backup_export",
+            "admin:backup_restore",
+            "admin:backup_delete_menu",
+            "admin:backup_history",
+            "admin:backup_auto",
+            "admin:home",
+        })
+
+    def test_settings_center_and_dynamic_admin_storage(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "settings.db")
+            try:
+                db.init_db()
+                self.assertTrue(db.is_admin_user(619658883))
+                self.assertTrue(db.add_admin(123456))
+                self.assertTrue(db.is_admin_user(123456))
+                self.assertTrue(db.remove_admin(123456))
+                self.assertFalse(db.remove_admin(619658883))
+                db.set_setting("store_name", "My Store")
+                db.set_setting("announcement", "New stock today!")
+                self.assertIn("My Store", get_welcome_text("en"))
+                self.assertIn("New stock today!", get_welcome_text("en"))
+                callbacks = {
+                    button.callback_data
+                    for row in settings.settings_menu().inline_keyboard
+                    for button in row
+                }
+                self.assertEqual(callbacks, {
+                    "admin:settings_profile", "admin:settings_logo",
+                    "admin:settings_welcome", "admin:settings_contact",
+                    "admin:settings_language", "admin:settings_currency",
+                    "admin:settings_country", "admin:settings_quality",
+                    "admin:settings_admins", "admin:settings_announcement",
+                    "admin:home",
+                })
+            finally:
+                db.DB_PATH = old_path
+
+    def test_default_language_currency_country_and_quality_settings(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "defaults.db")
+            try:
+                db.init_db()
+                db.set_setting("default_language", "en")
+                db.set_setting("currency", "THB")
+                db.set_setting("default_country", "Thailand")
+                db.set_setting("default_quality", "90")
+                self.assertEqual(db.get_user_language(999), "en")
+                self.assertEqual(apply_default_currency("250"), "฿250")
+                country_button = country_choices("Thailand").inline_keyboard[0][0]
+                self.assertEqual(
+                    country_button.callback_data,
+                    "admin:wizard:country:Thailand",
+                )
+                quality_callbacks = {
+                    button.callback_data
+                    for row in quality_percent_choices("90").inline_keyboard
+                    for button in row
+                }
+                self.assertIn("admin:wizard:quality_percent:90", quality_callbacks)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_customer_favorites_notifications_search_and_analytics(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "customer-pro.db")
+            try:
+                db.init_db()
+                first = db.create_stock(
+                    5, "Cambodia", "", "$25", "95%", "", "https://fb/1",
+                    "available", quality_percent=95,
+                )
+                second = db.create_stock(
+                    20, "Thailand", "", "$100", "85%", "", "https://fb/2",
+                    "sold", quality_percent=85,
+                )
+
+                self.assertTrue(db.toggle_favorite(700, first))
+                self.assertTrue(db.is_favorite(700, first))
+                self.assertEqual(db.get_favorite_stocks(700)[0][0], first)
+                self.assertFalse(db.toggle_favorite(700, first))
+
+                self.assertTrue(db.toggle_notification_subscription(700))
+                self.assertTrue(db.is_notification_subscriber(700))
+                self.assertEqual(db.get_notification_subscribers(), [700])
+                db.mark_stock_notification_pending(first)
+                self.assertTrue(db.consume_pending_stock_notification(first))
+                self.assertFalse(db.consume_pending_stock_notification(first))
+
+                self.assertEqual(db.search_stocks("country", value="thailand")[0][0], second)
+                self.assertEqual(db.search_stocks("quality", value=95)[0][0], first)
+                self.assertEqual(db.search_stocks("status", value="sold")[0][0], second)
+                self.assertEqual(
+                    {row[0] for row in db.search_stocks("price", minimum=20, maximum=30)},
+                    {first},
+                )
+
+                for event in ("view", "view", "buy", "facebook", "copy"):
+                    self.assertTrue(db.increment_stock_analytics(first, event))
+                totals = db.get_analytics_totals()
+                self.assertEqual(totals, {
+                    "views": 2, "buy_clicks": 1,
+                    "facebook_clicks": 1, "copy_clicks": 1,
+                })
+                trending = db.get_trending_stocks(10)
+                self.assertEqual(trending[0][0], first)
+                self.assertEqual(trending[0][7:9], (2, 1))
+            finally:
+                db.DB_PATH = old_path
+
+
+class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quick_edit_followers_updates_sqlite_and_returns_detail(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "quick-edit.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "equal", "$20", "100%", "",
+                    "https://facebook.com/test", "available",
+                )
+                message = SimpleNamespace(
+                    photo=[],
+                    text="25K",
+                    reply_text=AsyncMock(),
+                )
+                update = SimpleNamespace(
+                    effective_user=SimpleNamespace(id=619658883),
+                    message=message,
+                )
+                context = SimpleNamespace(user_data={
+                    "admin_mode": "quick_edit",
+                    "edit_stock_id": stock_id,
+                    "edit_field": "followers",
+                })
+                await handle_text(update, context)
+                self.assertEqual(db.get_stock(stock_id)[1], 25)
+                self.assertEqual(context.user_data, {})
+                self.assertIn("Followers updated", message.reply_text.await_args.args[0])
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_saved_stock_switches_to_persistent_photo_mode_and_done(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "workflow.db")
+            try:
+                db.init_db()
+                context = SimpleNamespace(user_data={
+                    "admin_mode": "create",
+                    "admin_step": "status",
+                    "draft": {
+                        "followers": 15,
+                        "price": "$50",
+                        "country": "Cambodia",
+                        "audience": "All",
+                        "female_percent": 55,
+                        "male_percent": 45,
+                        "quality_percent": 95,
+                        "real_followers": 1,
+                        "organic_reach": "high",
+                        "monetized": 1,
+                        "no_violation": 1,
+                        "ready_transfer": 1,
+                        "business_ready": 1,
+                        "fb_link": "https://facebook.com/test",
+                    },
+                })
+                stock_id = save_stock_draft(context, "available")
+                begin_photo_upload(context, 619658883, stock_id)
+
+                self.assertIsNotNone(db.get_stock(stock_id))
+                self.assertEqual(
+                    db.get_stock(stock_id)[12:21],
+                    (55, 45, 95, 1, "high", 1, 1, 1, 1),
+                )
+                self.assertEqual(db.get_photo_upload_session(619658883), stock_id)
+                self.assertEqual(context.user_data["admin_mode"], "upload_photos")
+
+                # The SQLite session survives loss of in-memory context.
+                self.assertTrue(db.add_stock_photo(
+                    db.get_photo_upload_session(619658883),
+                    "telegram-file-id",
+                ))
+                update = SimpleNamespace(
+                    effective_user=SimpleNamespace(id=619658883),
+                    message=SimpleNamespace(reply_text=AsyncMock()),
+                )
+                restarted_context = SimpleNamespace(user_data={})
+                await handle_command(update, restarted_context)
+
+                self.assertEqual(db.get_stock_photos(stock_id), ["telegram-file-id"])
+                self.assertIsNone(db.get_photo_upload_session(619658883))
+                self.assertEqual(
+                    update.message.reply_text.await_args.args[0],
+                    "✅ Stock created successfully.",
+                )
+            finally:
+                db.DB_PATH = old_path
+
+
+if __name__ == "__main__":
+    unittest.main()
