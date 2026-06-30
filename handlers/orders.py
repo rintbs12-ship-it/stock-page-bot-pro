@@ -10,16 +10,21 @@ from database.db import (
     get_all_orders,
     get_order,
     get_order_history,
+    get_order_receipts,
     get_order_timestamps,
     get_orders_by_group,
+    get_payment_logs,
     filter_orders,
     get_setting,
     get_stock,
+    is_admin_user,
     list_admins,
+    save_order_receipt,
     search_orders,
     transition_order,
     update_order_field,
     update_stock_field,
+    verify_payment,
 )
 
 
@@ -28,6 +33,7 @@ STATUS_DISPLAY = {
     "waiting_receipt": "🟡 Waiting Payment",
     "waiting_admin_confirm": "🟡 Waiting Payment",
     "payment_confirmed": "🔵 Payment Received",
+    "payment_received": "🔵 Payment Received",
     "waiting_customer_info": "🔵 Payment Received",
     "admin_processing": "🟠 Processing",
     "admin_added": "🟣 Admin Added",
@@ -65,6 +71,7 @@ STATUS_PROGRESS = {
     "waiting_receipt": 0,
     "waiting_admin_confirm": 0,
     "payment_confirmed": 1,
+    "payment_received": 1,
     "waiting_customer_info": 1,
     "admin_processing": 2,
     "admin_added": 3,
@@ -91,17 +98,42 @@ def payment_buttons(order_id):
 def admin_receipt_buttons(order_id, stock_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
-            "✅ Confirm Payment",
-            callback_data=f"admin:order_confirm:{order_id}",
+            "✅ Approve Payment",
+            callback_data=f"admin:payment_approve:{order_id}",
         ), InlineKeyboardButton(
             "❌ Reject Payment",
-            callback_data=f"admin:order_reject:{order_id}",
+            callback_data=f"admin:payment_reject:{order_id}",
         )],
         [InlineKeyboardButton(
-            "👀 View Stock",
-            callback_data=f"admin:stock:{stock_id}",
+            "👀 View Receipt",
+            callback_data=f"admin:payment_receipts:{order_id}",
+        ), InlineKeyboardButton(
+            "📦 View Order",
+            callback_data=f"admin:order_manager_view:{order_id}",
         )],
     ])
+
+
+def rejection_reason_buttons(order_id):
+    reasons = (
+        ("wrong_amount", "Wrong amount"),
+        ("wrong_receipt", "Wrong receipt"),
+        ("unclear_image", "Unclear image"),
+        ("not_found", "Payment not found"),
+    )
+    rows = [[InlineKeyboardButton(
+        label,
+        callback_data=f"admin:payment_reason:{order_id}:{code}",
+    )] for code, label in reasons]
+    rows.append([InlineKeyboardButton(
+        "✍️ Other Reason",
+        callback_data=f"admin:payment_reason_custom:{order_id}",
+    )])
+    rows.append([InlineKeyboardButton(
+        "⬅ View Order",
+        callback_data=f"admin:order_manager_view:{order_id}",
+    )])
+    return InlineKeyboardMarkup(rows)
 
 
 def admin_processing_buttons(order_id, customer_id):
@@ -254,10 +286,16 @@ def order_manager_detail_keyboard(order):
 
 def format_order_manager_detail(order):
     history = get_order_history(order[0])
+    payment_logs = get_payment_logs(order[0])
     timestamps = get_order_timestamps(order[0]) or {}
     timeline = "\n".join(
         f"• {STATUS_DISPLAY.get(entry[2], entry[2])}\n  {entry[5]}"
         for entry in history
+    )
+    payment_timeline = "\n".join(
+        f"• {entry[3].title()} · {entry[6]}"
+        + (f"\n  Reason: {entry[4]}" if entry[4] else "")
+        for entry in payment_logs
     )
     customer = f"@{order[3]}" if order[3] else "No username"
     return (
@@ -278,7 +316,8 @@ def format_order_manager_detail(order):
         f"Receipt: {'Uploaded' if order[8] else 'Not uploaded'}\n"
         f"Completion Time: {timestamps.get('completed_at') or 'Not completed'}\n"
         f"Cancelled Time: {timestamps.get('cancelled_at') or 'Not cancelled'}\n\n"
-        f"Status Timeline:\n{timeline or 'No history'}"
+        f"Status Timeline:\n{timeline or 'No history'}\n\n"
+        f"Payment Review History:\n{payment_timeline or 'No payment reviews'}"
     )
 
 
@@ -376,6 +415,32 @@ async def _send_to_customer(context, customer_id, text, reply_markup=None):
         return True
     except TelegramError:
         return False
+
+
+async def reject_payment(query, context, order_id, reason):
+    order = get_order(order_id)
+    if not order:
+        await query.message.reply_text("Order not found.")
+        return False
+    changed = verify_payment(
+        order_id, query.from_user.id, "rejected", reason,
+    )
+    if not changed:
+        await query.message.reply_text(
+            "Payment review was already completed or is unavailable."
+        )
+        return False
+    await _send_to_customer(
+        context,
+        order[2],
+        (
+            "❌ Payment rejected.\n\n"
+            f"Reason:\n{reason}\n\n"
+            "Please upload a correct receipt again."
+        ),
+        reply_markup=payment_buttons(order_id),
+    )
+    return True
 
 
 async def start_order(query, context, stock_id):
@@ -566,6 +631,135 @@ async def handle_customer_order_callback(query, context):
 async def handle_admin_order_callback(query, context):
     data = query.data
 
+    if not is_admin_user(query.from_user.id):
+        await query.message.reply_text("⛔ Admin only")
+        return
+
+    if data.startswith("admin:payment_approve:") or data.startswith(
+        "admin:order_confirm:"
+    ):
+        try:
+            order_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            await query.message.reply_text("Invalid order.")
+            return
+        order = get_order(order_id)
+        if not order:
+            await query.message.reply_text("Order not found.")
+            return
+        changed = verify_payment(
+            order_id, query.from_user.id, "approved",
+        )
+        if not changed:
+            await query.message.reply_text(
+                "Payment was already reviewed or is unavailable."
+            )
+            return
+        notified = await _send_to_customer(
+            context,
+            order[2],
+            (
+                "✅ Payment approved.\n\n"
+                "Your order is now being processed.\n\n"
+                "Please send your Facebook account link."
+            ),
+        )
+        await _replace_callback_message(
+            query,
+            "✅ Payment approved."
+            + ("" if notified else "\n⚠️ Customer notification failed."),
+        )
+        return
+
+    if data.startswith("admin:payment_reject:") or data.startswith(
+        "admin:order_reject:"
+    ):
+        try:
+            order_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            await query.message.reply_text("Invalid order.")
+            return
+        order = get_order(order_id)
+        if not order or order[5] != "waiting_admin_confirm":
+            await query.message.reply_text(
+                "Payment was already reviewed or is unavailable."
+            )
+            return
+        await _replace_callback_message(
+            query,
+            f"❌ Reject Payment · Order #{order_id}\n\nChoose a reason:",
+            rejection_reason_buttons(order_id),
+        )
+        return
+
+    if data.startswith("admin:payment_reason_custom:"):
+        try:
+            order_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            await query.message.reply_text("Invalid order.")
+            return
+        order = get_order(order_id)
+        if not order or order[5] != "waiting_admin_confirm":
+            await query.message.reply_text(
+                "Payment was already reviewed or is unavailable."
+            )
+            return
+        context.user_data["admin_mode"] = "payment_rejection_reason"
+        context.user_data["payment_order_id"] = order_id
+        await _replace_callback_message(
+            query,
+            f"✍️ Send the rejection reason for Order #{order_id}.",
+        )
+        return
+
+    if data.startswith("admin:payment_reason:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            await query.message.reply_text("Invalid rejection reason.")
+            return
+        try:
+            order_id = int(parts[2])
+        except ValueError:
+            await query.message.reply_text("Invalid order.")
+            return
+        reasons = {
+            "wrong_amount": "Wrong amount",
+            "wrong_receipt": "Wrong receipt",
+            "unclear_image": "Unclear image",
+            "not_found": "Payment not found",
+        }
+        reason = reasons.get(parts[3])
+        if not reason:
+            await query.message.reply_text("Invalid rejection reason.")
+            return
+        if await reject_payment(query, context, order_id, reason):
+            await _replace_callback_message(
+                query,
+                f"❌ Payment rejected.\n\nReason: {reason}",
+            )
+        return
+
+    if data.startswith("admin:payment_receipts:"):
+        try:
+            order_id = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            await query.message.reply_text("Invalid order.")
+            return
+        receipts = get_order_receipts(order_id)
+        if not receipts:
+            await query.message.reply_text("No receipts for this order.")
+            return
+        for index, receipt in enumerate(receipts, start=1):
+            await query.message.reply_photo(
+                photo=receipt[2],
+                caption=(
+                    f"🧾 Receipt {index} / {len(receipts)}\n"
+                    f"Order #{order_id}\n"
+                    f"Uploaded: {receipt[4]}"
+                ),
+            )
+        return
+
     if data == "admin:order_manager":
         context.user_data.pop("admin_mode", None)
         context.user_data.pop("order_search_type", None)
@@ -712,9 +906,10 @@ async def handle_admin_order_callback(query, context):
         if not order:
             await query.message.reply_text("Order not found.")
             return
-        await query.edit_message_text(
+        await _replace_callback_message(
+            query,
             format_order_manager_detail(order),
-            reply_markup=order_manager_detail_keyboard(order),
+            order_manager_detail_keyboard(order),
         )
         return
 
@@ -821,60 +1016,6 @@ async def handle_admin_order_callback(query, context):
         )
         return
 
-    if data.startswith("admin:order_confirm:"):
-        changed = transition_order(
-            order_id,
-            "payment_confirmed",
-            {"waiting_admin_confirm"},
-        )
-        if changed:
-            transition_order(
-                order_id,
-                "waiting_customer_info",
-                {"payment_confirmed"},
-            )
-            notified = await _send_to_customer(
-                context,
-                order[2],
-                (
-                    "✅ Payment confirmed.\n\n"
-                    "Please send your Facebook Profile Link.\n"
-                    "Example:\nhttps://facebook.com/username"
-                ),
-            )
-        await _replace_callback_message(
-            query,
-            (
-                "✅ Payment confirmed."
-                + ("" if notified else "\n⚠️ Customer notification failed.")
-                if changed else "Order status has already changed."
-            )
-        )
-        return
-
-    if data.startswith("admin:order_reject:"):
-        changed = transition_order(
-            order_id,
-            "waiting_payment",
-            {"waiting_admin_confirm"},
-        )
-        if changed:
-            update_order_field(order_id, "receipt_file_id", "", "waiting_payment")
-            await _send_to_customer(
-                context,
-                order[2],
-                (
-                    f"❌ Payment receipt rejected for Order #{order_id}.\n"
-                    "Please upload the correct receipt again."
-                ),
-                reply_markup=payment_buttons(order_id),
-            )
-        await _replace_callback_message(
-            query,
-            "Receipt rejected." if changed else "Order status has already changed."
-        )
-        return
-
     if data.startswith("admin:order_added:"):
         changed = transition_order(
             order_id,
@@ -967,6 +1108,25 @@ def status_customer_notification(status, order_id):
 
 
 async def handle_admin_order_message(update, context):
+    if context.user_data.get("admin_mode") == "payment_rejection_reason":
+        order_id = context.user_data.get("payment_order_id")
+        reason = (update.message.text or "").strip()
+        if not reason or len(reason) > 500:
+            await update.message.reply_text(
+                "Reason must be between 1 and 500 characters."
+            )
+            return True
+        query = type("MessageQuery", (), {
+            "from_user": update.effective_user,
+            "message": update.message,
+        })()
+        if await reject_payment(query, context, order_id, reason):
+            context.user_data.clear()
+            await update.message.reply_text(
+                f"❌ Payment rejected.\n\nReason: {reason}"
+            )
+        return True
+
     if context.user_data.get("admin_mode") != "order_search":
         return False
     search_type = context.user_data.get("order_search_type")
@@ -997,19 +1157,10 @@ async def handle_order_message(update, context):
             await update.message.reply_text("Please send the receipt as a photo.")
             return True
         receipt_file_id = update.message.photo[-1].file_id
-        update_order_field(
-            order_id,
-            "receipt_file_id",
-            receipt_file_id,
-            "waiting_receipt",
-            user_id,
-        )
-        transition_order(
-            order_id,
-            "waiting_admin_confirm",
-            {"waiting_receipt"},
-            user_id,
-        )
+        if not save_order_receipt(order_id, user_id, receipt_file_id):
+            context.user_data.clear()
+            await update.message.reply_text("Receipt session expired.")
+            return True
         context.user_data.clear()
         await update.message.reply_text(
             "✅ Receipt uploaded. Please wait for Admin confirmation."
@@ -1017,11 +1168,13 @@ async def handle_order_message(update, context):
         username = f"@{order[3]}" if order[3] else str(user_id)
         await _send_to_admins(
             context,
-            "🧾 New Payment Receipt\n\n"
-            f"Order #{order_id}\n"
-            f"Stock #{order[1]}\n"
+            "🧾 Payment Receipt Review\n\n"
+            f"Order ID: {order_id}\n"
+            f"Stock ID: {order[1]}\n"
             f"Customer: {username}\n"
-            f"Amount: {order[4]}",
+            f"Telegram ID: {user_id}\n"
+            f"Amount: {order[4]}\n"
+            "Status: Waiting Admin Confirm",
             reply_markup=admin_receipt_buttons(order_id, order[1]),
             photo=receipt_file_id,
         )
@@ -1041,7 +1194,7 @@ async def handle_order_message(update, context):
                 return True
             update_order_field(
                 order[0], "facebook_profile_link", text,
-                "waiting_customer_info", user_id,
+                order[5], user_id,
             )
             await update.message.reply_text(
                 "Please send the new Page Name you want."
@@ -1054,12 +1207,12 @@ async def handle_order_message(update, context):
             return True
         update_order_field(
             order[0], "requested_page_name", text,
-            "waiting_customer_info", user_id,
+            order[5], user_id,
         )
         transition_order(
             order[0],
             "admin_processing",
-            {"waiting_customer_info"},
+            {"waiting_customer_info", "payment_received"},
             user_id,
         )
         await update.message.reply_text(

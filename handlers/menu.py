@@ -483,7 +483,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_backup_callback(query, context)
         return
 
-    if data.startswith("admin:order"):
+    if data.startswith(("admin:order", "admin:payment")):
         await handle_admin_order_callback(query, context)
         return
 

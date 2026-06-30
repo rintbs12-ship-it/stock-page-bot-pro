@@ -850,8 +850,166 @@ class AdminWizardTests(unittest.TestCase):
             finally:
                 db.DB_PATH = old_path
 
+    def test_approve_payment_records_timestamp_and_log(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "approve-payment.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 700, "buyer", "$25")
+                db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, 700
+                )
+                db.save_order_receipt(order_id, 700, "receipt-1")
+                self.assertTrue(db.verify_payment(
+                    order_id, 619658883, "approved"
+                ))
+                self.assertEqual(
+                    db.get_order(order_id)[5], "payment_received"
+                )
+                self.assertTrue(
+                    db.get_order_timestamps(order_id)["payment_at"]
+                )
+                log = db.get_payment_logs(order_id)[0]
+                self.assertEqual(log[3:6], ("approved", "", "receipt-1"))
+            finally:
+                db.DB_PATH = old_path
+
+    def test_duplicate_payment_approval_is_ignored(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "duplicate-approval.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 700, "buyer", "$25")
+                db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, 700
+                )
+                db.save_order_receipt(order_id, 700, "receipt-1")
+                self.assertTrue(db.verify_payment(
+                    order_id, 619658883, "approved"
+                ))
+                self.assertFalse(db.verify_payment(
+                    order_id, 619658883, "approved"
+                ))
+                self.assertEqual(len(db.get_payment_logs(order_id)), 1)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_reject_payment_saves_reason(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "reject-payment.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 700, "buyer", "$25")
+                db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, 700
+                )
+                db.save_order_receipt(order_id, 700, "receipt-1")
+                self.assertTrue(db.verify_payment(
+                    order_id, 619658883, "rejected", "Wrong amount"
+                ))
+                self.assertEqual(db.get_order(order_id)[5], "waiting_payment")
+                log = db.get_payment_logs(order_id)[0]
+                self.assertEqual(log[3:5], ("rejected", "Wrong amount"))
+                con = db.connect()
+                saved_reason = con.execute(
+                    "SELECT rejection_reason FROM orders WHERE order_id=?",
+                    (order_id,),
+                ).fetchone()[0]
+                con.close()
+                self.assertEqual(saved_reason, "Wrong amount")
+            finally:
+                db.DB_PATH = old_path
+
+    def test_receipt_history_keeps_customer_reuploads(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "receipt-history.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 700, "buyer", "$25")
+                db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, 700
+                )
+                self.assertTrue(db.save_order_receipt(
+                    order_id, 700, "receipt-1"
+                ))
+                db.verify_payment(
+                    order_id, 619658883, "rejected", "Unclear image"
+                )
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, 700
+                ))
+                self.assertTrue(db.save_order_receipt(
+                    order_id, 700, "receipt-2"
+                ))
+                receipts = db.get_order_receipts(order_id)
+                self.assertEqual(
+                    [receipt[2] for receipt in receipts],
+                    ["receipt-1", "receipt-2"],
+                )
+                self.assertEqual(
+                    db.get_order(order_id)[8], "receipt-2"
+                )
+            finally:
+                db.DB_PATH = old_path
+
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_non_admin_cannot_approve_payment(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "payment-security.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                order_id = db.create_order(stock_id, 700, "buyer", "$25")
+                db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, 700
+                )
+                db.save_order_receipt(order_id, 700, "receipt-1")
+                message = SimpleNamespace(reply_text=AsyncMock())
+                query = SimpleNamespace(
+                    data=f"admin:payment_approve:{order_id}",
+                    from_user=SimpleNamespace(id=700),
+                    message=message,
+                )
+                context = SimpleNamespace(
+                    user_data={},
+                    bot=SimpleNamespace(send_message=AsyncMock()),
+                )
+                await handle_admin_order_callback(query, context)
+                self.assertEqual(
+                    db.get_order(order_id)[5], "waiting_admin_confirm"
+                )
+                self.assertIn(
+                    "Admin only", message.reply_text.await_args.args[0]
+                )
+                context.bot.send_message.assert_not_awaited()
+            finally:
+                db.DB_PATH = old_path
+
     async def test_admin_status_change_notifies_once_and_ignores_duplicate(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:

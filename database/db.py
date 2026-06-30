@@ -167,6 +167,7 @@ def init_db():
         "removed_admin_at": "TEXT DEFAULT ''",
         "completed_at": "TEXT DEFAULT ''",
         "cancelled_at": "TEXT DEFAULT ''",
+        "rejection_reason": "TEXT DEFAULT ''",
     }
     existing_order_columns = {
         row[1] for row in cur.execute("PRAGMA table_info(orders)").fetchall()
@@ -196,6 +197,40 @@ def init_db():
         created_at TEXT DEFAULT '',
         FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
     )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS order_receipts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        file_id TEXT NOT NULL,
+        uploaded_by INTEGER NOT NULL,
+        created_at TEXT DEFAULT '',
+        FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS payment_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        admin_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        reason TEXT DEFAULT '',
+        receipt_file_id TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
+    )
+    """)
+    cur.execute("""
+        INSERT INTO order_receipts (order_id, file_id, uploaded_by, created_at)
+        SELECT o.order_id, o.receipt_file_id, o.customer_id,
+               COALESCE(NULLIF(o.updated_at, ''), o.created_at)
+        FROM orders o
+        WHERE o.receipt_file_id <> ''
+          AND NOT EXISTS (
+              SELECT 1 FROM order_receipts r
+              WHERE r.order_id=o.order_id AND r.file_id=o.receipt_file_id
+          )
     """)
     cur.execute("""
         INSERT INTO order_status_history (
@@ -253,6 +288,14 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_order_history_order "
         "ON order_status_history(order_id, history_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_order_receipts_order "
+        "ON order_receipts(order_id, id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_payment_logs_order "
+        "ON payment_logs(order_id, id)"
     )
 
     con.commit()
@@ -747,24 +790,27 @@ def get_trending_stocks(limit=10):
 
 ORDER_STATUSES = {
     "waiting_payment", "waiting_receipt", "waiting_admin_confirm",
-    "payment_confirmed", "waiting_customer_info", "admin_processing",
+    "payment_confirmed", "payment_received", "waiting_customer_info",
+    "admin_processing",
     "admin_added", "customer_accepted", "waiting_customer_accept",
     "waiting_remove_admin", "completed", "cancelled",
 }
 
 ORDER_TRANSITIONS = {
     "waiting_payment": {
-        "waiting_receipt", "payment_confirmed", "cancelled",
+        "waiting_receipt", "payment_confirmed", "payment_received", "cancelled",
     },
     "waiting_receipt": {
-        "waiting_admin_confirm", "payment_confirmed", "cancelled",
+        "waiting_admin_confirm", "payment_confirmed",
+        "payment_received", "cancelled",
     },
     "waiting_admin_confirm": {
-        "waiting_payment", "payment_confirmed", "cancelled",
+        "waiting_payment", "payment_confirmed", "payment_received", "cancelled",
     },
     "payment_confirmed": {
         "waiting_customer_info", "admin_processing", "cancelled",
     },
+    "payment_received": {"admin_processing", "cancelled"},
     "waiting_customer_info": {"admin_processing", "cancelled"},
     "admin_processing": {"admin_added", "cancelled"},
     "admin_added": {
@@ -781,6 +827,7 @@ ORDER_TRANSITIONS = {
 
 ORDER_STATUS_TIMESTAMPS = {
     "payment_confirmed": "payment_at",
+    "payment_received": "payment_at",
     "admin_processing": "processing_at",
     "admin_added": "admin_added_at",
     "customer_accepted": "accepted_at",
@@ -933,6 +980,112 @@ def update_order_field(order_id, field, value, expected_status, customer_id=None
     return changed
 
 
+def save_order_receipt(order_id, customer_id, file_id):
+    if not file_id:
+        return False
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE orders
+        SET receipt_file_id=?, status='waiting_admin_confirm', updated_at=?
+        WHERE order_id=? AND customer_id=? AND status='waiting_receipt'
+    """, (file_id, now, order_id, customer_id))
+    changed = cur.rowcount > 0
+    if changed:
+        cur.execute("""
+            INSERT INTO order_receipts (
+                order_id, file_id, uploaded_by, created_at
+            ) VALUES (?, ?, ?, ?)
+        """, (order_id, file_id, customer_id, now))
+        cur.execute("""
+            INSERT INTO order_status_history (
+                order_id, status, changed_by, note, created_at
+            ) VALUES (?, 'waiting_admin_confirm', ?, 'Receipt uploaded', ?)
+        """, (order_id, str(customer_id), now))
+    con.commit()
+    con.close()
+    return changed
+
+
+def verify_payment(order_id, admin_id, action, reason=""):
+    if action not in {"approved", "rejected"} or not is_admin_user(admin_id):
+        return False
+    reason = (reason or "").strip()
+    if action == "rejected" and (not reason or len(reason) > 500):
+        return False
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_status = "payment_received" if action == "approved" else "waiting_payment"
+    con = connect()
+    cur = con.cursor()
+    if action == "approved":
+        cur.execute("""
+            UPDATE orders
+            SET status='payment_received', payment_at=CASE
+                    WHEN payment_at='' THEN ? ELSE payment_at END,
+                rejection_reason='', updated_at=?
+            WHERE order_id=? AND status='waiting_admin_confirm'
+        """, (now, now, order_id))
+    else:
+        cur.execute("""
+            UPDATE orders
+            SET status='waiting_payment', rejection_reason=?, updated_at=?
+            WHERE order_id=? AND status='waiting_admin_confirm'
+        """, (reason, now, order_id))
+    changed = cur.rowcount > 0
+    if changed:
+        receipt_row = cur.execute(
+            "SELECT receipt_file_id FROM orders WHERE order_id=?",
+            (order_id,),
+        ).fetchone()
+        receipt_file_id = receipt_row[0] if receipt_row else ""
+        cur.execute("""
+            INSERT INTO payment_logs (
+                order_id, admin_id, action, reason,
+                receipt_file_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            order_id, admin_id, action, reason, receipt_file_id, now,
+        ))
+        cur.execute("""
+            INSERT INTO order_status_history (
+                order_id, status, changed_by, note, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (
+            order_id, new_status, str(admin_id),
+            f"Payment {action}" + (f": {reason}" if reason else ""),
+            now,
+        ))
+    con.commit()
+    con.close()
+    return changed
+
+
+def get_order_receipts(order_id):
+    con = connect()
+    rows = con.execute("""
+        SELECT id, order_id, file_id, uploaded_by, created_at
+        FROM order_receipts
+        WHERE order_id=?
+        ORDER BY id ASC
+    """, (order_id,)).fetchall()
+    con.close()
+    return rows
+
+
+def get_payment_logs(order_id):
+    con = connect()
+    rows = con.execute("""
+        SELECT id, order_id, admin_id, action, reason,
+               receipt_file_id, created_at
+        FROM payment_logs
+        WHERE order_id=?
+        ORDER BY id ASC
+    """, (order_id,)).fetchall()
+    con.close()
+    return rows
+
+
 def get_customer_orders(customer_id, limit=20):
     con = connect()
     cur = con.cursor()
@@ -956,7 +1109,8 @@ def get_customer_action_order(customer_id):
                status, facebook_profile_link, requested_page_name,
                receipt_file_id, created_at, updated_at
         FROM orders
-        WHERE customer_id=? AND status='waiting_customer_info'
+        WHERE customer_id=?
+          AND status IN ('waiting_customer_info', 'payment_received')
         ORDER BY order_id DESC LIMIT 1
     """, (customer_id,))
     row = cur.fetchone()
@@ -968,7 +1122,7 @@ def get_orders_by_group(group_name, limit=30):
     groups = {
         "waiting": ("waiting_admin_confirm",),
         "processing": (
-            "payment_confirmed", "waiting_customer_info",
+            "payment_confirmed", "payment_received", "waiting_customer_info",
             "admin_processing", "admin_added", "waiting_customer_accept",
             "customer_accepted", "waiting_remove_admin",
         ),
@@ -1075,7 +1229,8 @@ def filter_orders(filter_name, limit=50):
             "waiting_payment", "waiting_receipt", "waiting_admin_confirm",
         ),
         "processing": (
-            "payment_confirmed", "waiting_customer_info", "admin_processing",
+            "payment_confirmed", "payment_received", "waiting_customer_info",
+            "admin_processing",
             "admin_added", "waiting_customer_accept", "customer_accepted",
             "waiting_remove_admin",
         ),
