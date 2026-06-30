@@ -64,7 +64,7 @@ def get_analytics_data(period="all", now=None):
     con = connect()
     orders = con.execute("""
         SELECT o.order_id, o.stock_id, o.customer_id, o.price, o.status,
-               o.created_at, o.completed_at, s.followers
+               o.created_at, o.completed_at, s.followers, s.page_type
         FROM orders o
         LEFT JOIN stocks s ON s.id=o.stock_id
         ORDER BY o.order_id
@@ -112,7 +112,9 @@ def get_analytics_data(period="all", now=None):
     completion_seconds = []
     for row in completed:
         followers = row[7] or 0
-        if followers <= 5:
+        if row[8]:
+            category = row[8]
+        elif followers <= 5:
             category = "1K–5K"
         elif followers <= 10:
             category = "6K–10K"

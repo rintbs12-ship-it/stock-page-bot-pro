@@ -8,6 +8,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InputFile,
     InputMediaPhoto,
+    ReplyKeyboardRemove,
     Update,
 )
 from telegram.error import BadRequest, TelegramError
@@ -63,6 +64,8 @@ from keyboards.buttons import (
     photo_manager_menu,
     photo_multi_select_menu,
     photo_navigation,
+    PAGE_TYPES,
+    page_type_choices,
     quality_search_menu,
     quality_percent_choices,
     quick_edit_menu,
@@ -133,28 +136,29 @@ Please choose a menu below:
 }
 
 WIZARD_STEPS = (
-    "followers", "price", "country", "audience", "female_percent",
+    "followers", "price", "audience", "country", "page_type", "female_percent",
     "male_percent", "quality_percent", "real_followers", "organic_reach",
     "monetized", "no_violation", "ready_transfer", "business_ready",
     "fb_link", "status",
 )
 
 WIZARD_PROMPTS = {
-    "followers": "🛠️ Add Stock Wizard\n\n1/15 Followers\nExample: 15 or 15K",
-    "price": "🛠️ Add Stock Wizard\n\n2/15 Price\nExample: $25",
-    "country": "🛠️ Add Stock Wizard\n\n3/15 Country",
-    "audience": "🛠️ Add Stock Wizard\n\n4/15 Audience type",
-    "female_percent": "🛠️ Add Stock Wizard\n\n5/15 Female percent\nExample: 55",
-    "male_percent": "🛠️ Add Stock Wizard\n\n6/15 Male percent\nExample: 45",
-    "quality_percent": "🛠️ Add Stock Wizard\n\n7/15 Quality percent",
-    "real_followers": "🛠️ Add Stock Wizard\n\n8/15 Real Followers",
-    "organic_reach": "🛠️ Add Stock Wizard\n\n9/15 Organic Reach",
-    "monetized": "🛠️ Add Stock Wizard\n\n10/15 Monetized",
-    "no_violation": "🛠️ Add Stock Wizard\n\n11/15 No Policy Violation",
-    "ready_transfer": "🛠️ Add Stock Wizard\n\n12/15 Ready to Transfer",
-    "business_ready": "🛠️ Add Stock Wizard\n\n13/15 Business Ready",
-    "fb_link": "🛠️ Add Stock Wizard\n\n14/15 Facebook Page Link",
-    "status": "🛠️ Add Stock Wizard\n\n15/15 Status",
+    "followers": "🛠️ Add Stock Wizard\n\n1/16 Followers\nExample: 15 or 15K",
+    "price": "🛠️ Add Stock Wizard\n\n2/16 Price\nExample: $25",
+    "audience": "🛠️ Add Stock Wizard\n\n3/16 Audience type",
+    "country": "🛠️ Add Stock Wizard\n\n4/16 Country",
+    "page_type": "🛠️ Add Stock Wizard\n\n5/16 Page Type",
+    "female_percent": "🛠️ Add Stock Wizard\n\n6/16 Female percent\nExample: 55",
+    "male_percent": "🛠️ Add Stock Wizard\n\n7/16 Male percent\nExample: 45",
+    "quality_percent": "🛠️ Add Stock Wizard\n\n8/16 Quality percent",
+    "real_followers": "🛠️ Add Stock Wizard\n\n9/16 Real Followers",
+    "organic_reach": "🛠️ Add Stock Wizard\n\n10/16 Organic Reach",
+    "monetized": "🛠️ Add Stock Wizard\n\n11/16 Monetized",
+    "no_violation": "🛠️ Add Stock Wizard\n\n12/16 No Policy Violation",
+    "ready_transfer": "🛠️ Add Stock Wizard\n\n13/16 Ready to Transfer",
+    "business_ready": "🛠️ Add Stock Wizard\n\n14/16 Business Ready",
+    "fb_link": "🛠️ Add Stock Wizard\n\n15/16 Facebook Page Link",
+    "status": "🛠️ Add Stock Wizard\n\n16/16 Status",
 }
 
 def is_admin(user_id: int) -> bool:
@@ -186,6 +190,8 @@ def _wizard_is_valid(context, expected_step=None):
 
 
 def _wizard_keyboard(step):
+    if step == "page_type":
+        return page_type_choices()
     if step == "country":
         base = country_choices(get_setting("default_country", "Cambodia"))
     elif step == "audience":
@@ -213,17 +219,38 @@ def _wizard_keyboard(step):
 
 async def _render_wizard_prompt(message, context, edit=False, text=None):
     step = context.user_data["admin_step"]
+    prompt = text or WIZARD_PROMPTS[step]
+    if edit and step == "page_type":
+        await message.edit_message_text("📂 Choose a Page Type below.")
+        await message.message.reply_text(
+            prompt,
+            reply_markup=_wizard_keyboard(step),
+        )
+        return
     method = message.edit_message_text if edit else message.reply_text
     await method(
-        text or WIZARD_PROMPTS[step],
+        prompt,
         reply_markup=_wizard_keyboard(step),
     )
 
 
 async def _recover_invalid_wizard(message, context, user_id, edit=False):
+    remove_wizard_keyboard = (
+        context.user_data.get("admin_step") == "page_type"
+    )
     clear_photo_upload_session(user_id)
     _clear_wizard_state(context)
     language = get_user_language(user_id)
+    if remove_wizard_keyboard and not edit:
+        await message.reply_text(
+            "⚠️ Add Stock session expired. Please start again.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await message.reply_text(
+            get_welcome_text(language),
+            reply_markup=main_menu(is_admin(user_id), language),
+        )
+        return ConversationHandler.END
     method = message.edit_message_text if edit else message.reply_text
     await method(
         "⚠️ Add Stock session expired. Please start again.",
@@ -346,6 +373,7 @@ def save_stock_draft(context, status: str) -> int:
         no_violation=draft.get("no_violation", 1),
         ready_transfer=draft.get("ready_transfer", 1),
         business_ready=draft.get("business_ready", 1),
+        page_type=draft.get("page_type"),
     )
 
 
@@ -396,8 +424,10 @@ def admin_stock_text(row) -> str:
         stock_id, followers, country, audience, price, quality, description,
         fb_link, status, featured, promotion, created_at,
     ) = row[:12]
+    page_type = row[21] if len(row) > 21 and row[21] else "Not set"
     return (
         f"📦 Stock #{stock_id}\n\n"
+        f"📂 Page Type : {page_type}\n"
         f"👥 Followers: {followers}K\n"
         f"💵 Price: {price}\n"
         f"🌍 Country: {country}\n"
@@ -413,12 +443,16 @@ def admin_stock_text(row) -> str:
 
 
 def customer_stock_text(row, language):
+    if len(row) == 21:
+        row = (*row, None)
     (
         stock_id, followers, country, audience, price, quality, description,
         fb_link, status, featured, promotion, created_at, female_percent,
         male_percent, quality_percent, real_followers, organic_reach,
         monetized, no_violation, ready_transfer, business_ready,
+        page_type,
     ) = row
+    page_type = page_type or "Not set"
     status_text = status.title()
     status_icon = "🟢" if status == "available" else "🔴"
     stock_icon = get_setting("theme_icon_stock", "📦")
@@ -435,6 +469,7 @@ def customer_stock_text(row, language):
         "quality": quality_percent,
         "status": status_text,
         "facebook_link": fb_link,
+        "page_type": page_type,
     }
     if template:
         try:
@@ -453,6 +488,7 @@ def customer_stock_text(row, language):
         ]
         detail = (
             f"{stock_icon} Stock #{stock_id}\n\n"
+            f"📂 Page Type : {page_type}\n"
             f"👥 Followers : {followers}K\n"
             f"🌍 Country : {country}\n"
             f"👩 Female Audience : {female_percent}%\n"
@@ -477,6 +513,7 @@ def customer_stock_text(row, language):
     ]
     detail = (
         f"{stock_icon} Stock #{stock_id}\n\n"
+        f"📂 Page Type : {page_type}\n"
         f"👥 Followers : {followers}K\n"
         f"🌍 Country : {country}\n"
         f"👩 Audience : ស្រីច្រើន ({female_percent}%)\n"
@@ -557,6 +594,10 @@ def build_stock_report(stats, report_date=None):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    remove_wizard_keyboard = (
+        context.user_data.get("admin_mode") == "create"
+        and context.user_data.get("admin_step") == "page_type"
+    )
     clear_photo_upload_session(uid)
     _clear_wizard_state(context)
     user = update.effective_user
@@ -567,6 +608,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         getattr(user, "last_name", "") or "",
     )
     language = get_user_language(uid)
+    if remove_wizard_keyboard:
+        await update.message.reply_text(
+            "Add Stock wizard closed.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
     logo_file_id = get_setting("bot_logo_file_id", "")
     if logo_file_id:
         await update.message.reply_photo(
@@ -586,9 +632,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     was_add_stock = context.user_data.get("admin_mode") == "create"
+    remove_wizard_keyboard = (
+        was_add_stock and context.user_data.get("admin_step") == "page_type"
+    )
     clear_photo_upload_session(user_id)
     _clear_wizard_state(context)
     if is_admin(user_id):
+        if remove_wizard_keyboard:
+            await update.message.reply_text(
+                "❌ Add Stock cancelled.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await update.message.reply_text(
+                "👑 Admin Panel",
+                reply_markup=admin_home(),
+            )
+            return ConversationHandler.END
         await update.message.reply_text(
             "❌ Add Stock cancelled." if was_add_stock else "✅ Action cancelled.",
             reply_markup=admin_home(),
@@ -1264,7 +1323,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("admin:quick_field:"):
         _, _, stock_id, field = data.split(":")
-        if field not in {"followers", "price", "fb_link"} or not get_stock(int(stock_id)):
+        if field not in {
+            "followers", "price", "fb_link", "page_type"
+        } or not get_stock(int(stock_id)):
             await query.edit_message_text("Invalid Quick Edit request.", reply_markup=admin_home())
             return
         context.user_data.clear()
@@ -1293,7 +1354,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, _, stock_id, field = data.split(":")
         if field not in {
             "followers", "price", "country", "audience", "quality",
-            "description", "fb_link",
+            "description", "fb_link", "page_type",
         }:
             await query.edit_message_text("Invalid field.", reply_markup=admin_home())
             return
@@ -1332,7 +1393,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not _wizard_is_valid(context, "country"):
             return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"]["country"] = data.rsplit(":", 1)[1]
-        context.user_data["admin_step"] = "audience"
+        context.user_data["admin_step"] = "page_type"
         await _render_wizard_prompt(query, context, edit=True)
         return
 
@@ -1340,7 +1401,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not _wizard_is_valid(context, "audience"):
             return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"]["audience"] = data.rsplit(":", 1)[1]
-        context.user_data["admin_step"] = "female_percent"
+        context.user_data["admin_step"] = "country"
         await _render_wizard_prompt(query, context, edit=True)
         return
 
@@ -1445,6 +1506,45 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     language = get_user_language(user_id)
+    text = (getattr(update.message, "text", None) or "").strip()
+
+    if context.user_data.get("admin_mode") == "create" and text == "❌ Cancel":
+        clear_photo_upload_session(user_id)
+        _clear_wizard_state(context)
+        await update.message.reply_text(
+            "❌ Add Stock cancelled.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await update.message.reply_text(
+            "👑 Admin Panel",
+            reply_markup=admin_home(),
+        )
+        return ConversationHandler.END
+
+    if context.user_data.get("admin_mode") == "create" and text == "⬅️ Back":
+        if not _wizard_is_valid(context):
+            return await _recover_invalid_wizard(
+                update.message, context, user_id
+            )
+        step_index = WIZARD_STEPS.index(context.user_data["admin_step"])
+        if step_index == 0:
+            _clear_wizard_state(context)
+            await update.message.reply_text(
+                "👑 Admin Panel",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await update.message.reply_text(
+                "👑 Admin Panel",
+                reply_markup=admin_home(),
+            )
+            return ConversationHandler.END
+        context.user_data["admin_step"] = WIZARD_STEPS[step_index - 1]
+        await update.message.reply_text(
+            "Returning to the previous step.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await _render_wizard_prompt(update.message, context)
+        return
 
     if context.user_data.get("admin_mode") == "create" and not _wizard_is_valid(
         context
@@ -1595,6 +1695,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     value = validate_http_url(value, "Facebook Link")
                 elif field == "price":
                     value = apply_default_currency(value)
+                elif field == "page_type" and value not in PAGE_TYPES:
+                    raise ValueError("Choose a valid Page Type.")
             except ValueError as exc:
                 await update.message.reply_text(f"Invalid value: {exc}")
                 return
@@ -1626,6 +1728,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     value = validate_http_url(value, "Facebook Link")
                 elif field == "price":
                     value = apply_default_currency(value)
+                elif field == "page_type" and value not in PAGE_TYPES:
+                    raise ValueError("Choose a valid Page Type.")
             except ValueError as exc:
                 await update.message.reply_text(f"Invalid value: {exc}")
                 return
@@ -1651,6 +1755,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 update.message, context, user_id
             )
 
+        if context.user_data.get("admin_step") == "page_type":
+            if text not in PAGE_TYPES:
+                await _render_wizard_prompt(
+                    update.message,
+                    context,
+                    text="Please choose a Page Type from the keyboard.",
+                )
+                return
+            context.user_data["draft"]["page_type"] = text
+            context.user_data["admin_step"] = "female_percent"
+            await update.message.reply_text(
+                f"📂 Page Type selected: {text}",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await _render_wizard_prompt(update.message, context)
+            return
+
         if context.user_data.get("admin_step") == "followers":
             try:
                 followers = parse_followers_value(update.message.text)
@@ -1674,7 +1795,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             context.user_data.setdefault("draft", {})["price"] = price
-            context.user_data["admin_step"] = "country"
+            context.user_data["admin_step"] = "audience"
             await _render_wizard_prompt(update.message, context)
             return
 

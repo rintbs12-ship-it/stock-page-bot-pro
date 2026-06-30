@@ -67,6 +67,7 @@ def init_db():
         "ready_transfer": "INTEGER DEFAULT 1",
         "business_ready": "INTEGER DEFAULT 1",
         "category": "TEXT DEFAULT ''",
+        "page_type": "TEXT",
     }
     existing_columns = {
         row[1] for row in cur.execute("PRAGMA table_info(stocks)").fetchall()
@@ -450,6 +451,9 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_stocks_category ON stocks(category)"
     )
     cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_stocks_page_type ON stocks(page_type)"
+    )
+    cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_stocks_created ON stocks(created_at DESC, id DESC)"
     )
     cur.execute(
@@ -803,16 +807,19 @@ def advanced_admin_search(search_type, filters=None, page=1, per_page=10):
     clauses = []
     params = []
     if search_type == "stock":
-        columns = ("id", "followers", "country", "audience", "price", "quality", "status", "category")
+        columns = (
+            "id", "followers", "country", "audience", "price", "quality",
+            "status", "category", "page_type",
+        )
         table = "stocks"
         keyword = str(filters.get("keyword", "")).strip()
         if keyword:
             like = f"%{keyword}%"
             clauses.append("""(
                 CAST(id AS TEXT) LIKE ? OR description LIKE ? OR country LIKE ?
-                OR audience LIKE ? OR category LIKE ?
+                OR audience LIKE ? OR category LIKE ? OR page_type LIKE ?
             )""")
-            params.extend([like] * 5)
+            params.extend([like] * 6)
         if filters.get("price_min") not in (None, ""):
             clauses.append("CAST(REPLACE(REPLACE(price, '$', ''), ',', '') AS REAL)>=?")
             params.append(float(filters["price_min"]))
@@ -826,6 +833,9 @@ def advanced_admin_search(search_type, filters=None, page=1, per_page=10):
         if filters.get("category"):
             clauses.append("(LOWER(category)=LOWER(?) OR LOWER(audience)=LOWER(?))")
             params.extend([filters["category"], filters["category"]])
+        if filters.get("page_type"):
+            clauses.append("LOWER(page_type)=LOWER(?)")
+            params.append(filters["page_type"])
         order_by = "id DESC"
     elif search_type == "customer":
         columns = (
@@ -1048,6 +1058,7 @@ def create_stock(
     status, featured=0, promotion=0, female_percent=0, male_percent=0,
     quality_percent=100, real_followers=1, organic_reach="high",
     monetized=1, no_violation=1, ready_transfer=1, business_ready=1,
+    page_type=None,
 ):
     con = connect()
     cur = con.cursor()
@@ -1058,13 +1069,13 @@ def create_stock(
             fb_link, status, featured, promotion, created_at,
             female_percent, male_percent, quality_percent, real_followers,
             organic_reach, monetized, no_violation, ready_transfer,
-            business_ready
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            business_ready, page_type
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         followers, country, audience, price, quality, description, fb_link,
         status, featured, promotion, now, female_percent, male_percent,
         quality_percent, real_followers, organic_reach, monetized,
-        no_violation, ready_transfer, business_ready,
+        no_violation, ready_transfer, business_ready, page_type,
     ))
     stock_id = cur.lastrowid
     con.commit()
@@ -1225,7 +1236,7 @@ def get_stock(stock_id):
                fb_link, status, featured, promotion, created_at,
                female_percent, male_percent, quality_percent, real_followers,
                organic_reach, monetized, no_violation, ready_transfer,
-               business_ready
+               business_ready, page_type
         FROM stocks WHERE id=?
     """, (stock_id,))
     row = cur.fetchone()
@@ -2476,6 +2487,9 @@ def search_stocks(field, value=None, minimum=None, maximum=None):
     elif field == "status":
         query = base + " WHERE status=?"
         params = (value,)
+    elif field == "page_type":
+        query = base + " WHERE LOWER(page_type)=LOWER(?)"
+        params = (value,)
     elif field == "price":
         query = """
             WITH priced AS (
@@ -2549,7 +2563,7 @@ def update_stock_field(stock_id, field, value):
         "description", "fb_link", "status", "featured", "promotion",
         "female_percent", "male_percent", "quality_percent",
         "real_followers", "organic_reach", "monetized", "no_violation",
-        "ready_transfer", "business_ready",
+        "ready_transfer", "business_ready", "page_type",
     }
     if field not in allowed:
         return False

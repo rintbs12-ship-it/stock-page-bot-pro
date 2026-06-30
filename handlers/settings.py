@@ -367,7 +367,7 @@ async def handle_settings_callback(query, context):
         await query.edit_message_text(
             "🪪 Send the Stock Card Template.\n\n"
             "Available placeholders:\n"
-            "{id} {followers} {country} {audience}\n"
+            "{id} {page_type} {followers} {country} {audience}\n"
             "{female_percent} {male_percent} {price}\n"
             "{quality} {status} {facebook_link}\n\n"
             "Send - to restore the standard stock card.",
@@ -717,7 +717,7 @@ async def handle_settings_message(update, context):
             return True
         else:
             allowed = {
-                "id", "followers", "country", "audience",
+                "id", "page_type", "followers", "country", "audience",
                 "female_percent", "male_percent", "price",
                 "quality", "status", "facebook_link",
             }

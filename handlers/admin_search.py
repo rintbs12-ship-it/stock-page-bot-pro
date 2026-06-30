@@ -66,6 +66,9 @@ def stock_filter_menu():
             InlineKeyboardButton("🏷 Category", callback_data="admin:search:input:category"),
             InlineKeyboardButton("📌 Status", callback_data="admin:search:stock_status"),
         ],
+        [InlineKeyboardButton(
+            "📂 Page Type", callback_data="admin:search:input:page_type"
+        )],
         [InlineKeyboardButton("🔎 Search", callback_data="admin:search:run")],
         [InlineKeyboardButton("♻ Clear", callback_data="admin:search:clear")],
         [InlineKeyboardButton("⬅ Search Home", callback_data="admin:search")],
@@ -131,7 +134,8 @@ def _format_row(search_type, columns, row):
     if search_type == "stock":
         return (
             f"📦 Stock #{item['id']} · {item['followers']}K\n"
-            f"{item['country']} · {item['price']} · {item['quality']} · {item['status']}"
+            f"📂 {item['page_type'] or 'Not set'} · {item['country']} · "
+            f"{item['price']} · {item['quality']} · {item['status']}"
         )
     if search_type == "customer":
         name = " ".join(

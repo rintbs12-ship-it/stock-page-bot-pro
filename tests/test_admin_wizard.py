@@ -162,6 +162,13 @@ class AdminWizardTests(unittest.TestCase):
             db.DB_PATH = str(Path(folder) / "analytics-summary.db")
             try:
                 now = self._create_analytics_fixture()
+                con = db.connect()
+                con.execute(
+                    "UPDATE stocks SET page_type='Movie' "
+                    "WHERE id=(SELECT MIN(id) FROM stocks)"
+                )
+                con.commit()
+                con.close()
                 data = get_analytics_data("all", now)
                 self.assertEqual(
                     (data["orders"], data["completed"], data["cancelled"],
@@ -172,6 +179,7 @@ class AdminWizardTests(unittest.TestCase):
                 self.assertEqual(data["today_revenue"], 25.0)
                 self.assertEqual(data["monthly_revenue"], 150.0)
                 self.assertEqual(data["average_order"], 50.0)
+                self.assertIn(("Movie", 2), data["top_categories"])
                 dashboard = format_analytics_dashboard(data)
                 self.assertIn("📊 Analytics Dashboard", dashboard)
                 self.assertIn("Revenue", dashboard)
@@ -392,7 +400,7 @@ class AdminWizardTests(unittest.TestCase):
                     stock_ids.append(stock_id)
                 con = db.connect()
                 con.execute(
-                    "UPDATE stocks SET category='Gaming' WHERE id=?",
+                    "UPDATE stocks SET category='Gaming', page_type='Gaming' WHERE id=?",
                     (stock_ids[0],),
                 )
                 con.commit()
@@ -440,6 +448,15 @@ class AdminWizardTests(unittest.TestCase):
                     "stock", {"category": "Gaming"}
                 )
                 self.assertEqual(category_total, 1)
+                _, page_type_rows, page_type_total = db.advanced_admin_search(
+                    "stock", {"page_type": "Gaming"}
+                )
+                self.assertEqual(page_type_total, 1)
+                self.assertEqual(page_type_rows[0][-1], "Gaming")
+                self.assertEqual(
+                    db.search_stocks("page_type", value="Gaming")[0][0],
+                    stock_ids[0],
+                )
                 _, price_rows, price_total = db.advanced_admin_search(
                     "stock", {"price_min": 100, "price_max": 120}
                 )
@@ -587,7 +604,7 @@ class AdminWizardTests(unittest.TestCase):
                     "female_percent", "male_percent", "quality_percent",
                     "real_followers", "organic_reach", "monetized",
                     "no_violation", "ready_transfer", "business_ready",
-                    "category",
+                    "category", "page_type",
                 }.issubset(columns))
                 report = db.verify_database()
                 self.assertEqual(report["integrity"], "ok")
@@ -617,7 +634,13 @@ class AdminWizardTests(unittest.TestCase):
                 stock_id = db.create_stock(
                     25, "Cambodia", "Women", "$125", "A+",
                     "Test description", "https://facebook.com/test",
-                    "available",
+                    "available", page_type="Movie",
+                )
+                self.assertEqual(db.get_stock(stock_id)[21], "Movie")
+                card = customer_stock_text(db.get_stock(stock_id), "en")
+                self.assertIn("📂 Page Type : Movie", card)
+                self.assertLess(
+                    card.index("📂 Page Type"), card.index("Followers")
                 )
                 self.assertEqual(
                     db.get_stock(stock_id)[1:11],
@@ -641,6 +664,7 @@ class AdminWizardTests(unittest.TestCase):
         self.assertIn("គុណភាព : 95%", khmer)
         self.assertIn("Female Audience : 55%", english)
         self.assertIn("Quality : 95%", english)
+        self.assertIn("📂 Page Type : Not set", english)
 
     def test_stock_detail_buttons_are_localized(self):
         khmer_labels = {
@@ -671,9 +695,10 @@ class AdminWizardTests(unittest.TestCase):
             for button in row
         }
         self.assertEqual(callbacks, {
-            "admin:quick_field:42:followers",
-            "admin:quick_field:42:price",
-            "admin:quick_field:42:fb_link",
+                "admin:quick_field:42:followers",
+                "admin:quick_field:42:price",
+                "admin:quick_field:42:page_type",
+                "admin:quick_field:42:fb_link",
             "admin:quick_status:42",
             "admin:photo_manager:42",
             "admin:stock:42",
@@ -1571,6 +1596,54 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_add_stock_page_type_reply_keyboard_and_selection(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "wizard-page-type.db")
+            try:
+                db.init_db()
+                context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create",
+                        "admin_step": "page_type",
+                        "draft": {
+                            "followers": 15,
+                            "price": "$50",
+                            "country": "Cambodia",
+                            "audience": "female",
+                        },
+                    },
+                    chat_data={},
+                )
+                markup = _wizard_keyboard("page_type")
+                labels = {
+                    button.text for row in markup.keyboard for button in row
+                }
+                self.assertIn("Movie", labels)
+                self.assertIn("Fashion", labels)
+                self.assertIn("⬅️ Back", labels)
+                self.assertIn("❌ Cancel", labels)
+
+                message = SimpleNamespace(
+                    text="Movie", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=message,
+                    ),
+                    context,
+                )
+                self.assertEqual(context.user_data["draft"]["page_type"], "Movie")
+                self.assertEqual(context.user_data["admin_step"], "female_percent")
+                self.assertEqual(message.reply_text.await_count, 2)
+                self.assertIn(
+                    "6/16 Female percent",
+                    message.reply_text.await_args_list[1].args[0],
+                )
+            finally:
+                db.DB_PATH = old_path
+
     async def test_add_stock_back_preserves_draft_and_renders_previous_step(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:
@@ -1582,6 +1655,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     "price": "$50",
                     "country": "Cambodia",
                     "audience": "female",
+                    "page_type": "Movie",
                     "female_percent": 55,
                 }
                 context = SimpleNamespace(
@@ -1606,7 +1680,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(context.user_data["admin_step"], "female_percent")
                 self.assertIs(context.user_data["draft"], draft)
                 self.assertEqual(context.user_data["draft"]["female_percent"], 55)
-                self.assertIn("5/15 Female percent", query.edit_message_text.await_args.args[0])
+                self.assertIn("6/16 Female percent", query.edit_message_text.await_args.args[0])
                 markup = query.edit_message_text.await_args.kwargs["reply_markup"]
                 callbacks = {
                     button.callback_data
@@ -1624,13 +1698,21 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
             try:
                 db.init_db()
                 for step in WIZARD_STEPS:
-                    callbacks = {
-                        button.callback_data
-                        for row in _wizard_keyboard(step).inline_keyboard
-                        for button in row
-                    }
-                    self.assertIn("admin:wizard:back", callbacks)
-                    self.assertIn("admin:wizard:cancel", callbacks)
+                    markup = _wizard_keyboard(step)
+                    if step == "page_type":
+                        labels = {
+                            button.text
+                            for row in markup.keyboard for button in row
+                        }
+                        self.assertIn("⬅️ Back", labels)
+                        self.assertIn("❌ Cancel", labels)
+                    else:
+                        callbacks = {
+                            button.callback_data
+                            for row in markup.inline_keyboard for button in row
+                        }
+                        self.assertIn("admin:wizard:back", callbacks)
+                        self.assertIn("admin:wizard:cancel", callbacks)
 
                 context = SimpleNamespace(
                     user_data={
@@ -2197,6 +2279,26 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(db.get_stock(stock_id)[1], 25)
                 self.assertEqual(context.user_data, {})
                 self.assertIn("Followers updated", message.reply_text.await_args.args[0])
+
+                page_type_message = SimpleNamespace(
+                    photo=[], text="Gaming", reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=page_type_message,
+                    ),
+                    SimpleNamespace(user_data={
+                        "admin_mode": "quick_edit",
+                        "edit_stock_id": stock_id,
+                        "edit_field": "page_type",
+                    }),
+                )
+                self.assertEqual(db.get_stock(stock_id)[21], "Gaming")
+                self.assertIn(
+                    "Page Type updated",
+                    page_type_message.reply_text.await_args.args[0],
+                )
             finally:
                 db.DB_PATH = old_path
 
@@ -2214,6 +2316,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         "price": "$50",
                         "country": "Cambodia",
                         "audience": "All",
+                        "page_type": "Movie",
                         "female_percent": 55,
                         "male_percent": 45,
                         "quality_percent": 95,
@@ -2234,6 +2337,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     db.get_stock(stock_id)[12:21],
                     (55, 45, 95, 1, "high", 1, 1, 1, 1),
                 )
+                self.assertEqual(db.get_stock(stock_id)[21], "Movie")
                 self.assertEqual(db.get_photo_upload_session(619658883), stock_id)
                 self.assertEqual(context.user_data["admin_mode"], "upload_photos")
 

@@ -1,4 +1,9 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 from config import TELEGRAM_CONTACT, FACEBOOK_CONTACT
 from database.db import get_menu_items, get_setting
 
@@ -10,6 +15,14 @@ MENUS = [
     ("📁 Menu 5 (31K-50K)", "range:31:50"),
     ("📁 Menu 6 (51K-100K)", "range:51:100"),
 ]
+
+PAGE_TYPES = (
+    "Movie", "Gaming", "Shopping", "Beauty", "Technology", "Food",
+    "Sports", "News", "Music", "Entertainment", "Education", "Travel",
+    "Real Estate", "Automotive", "Pets", "Business", "Finance",
+    "Personal Blog", "TV / Media", "Books", "Fan Page", "E-commerce",
+    "Art", "Photography", "Health", "Fitness", "Kids", "Fashion",
+)
 
 
 def main_menu(is_admin=False, language="km"):
@@ -242,6 +255,9 @@ def quick_edit_menu(stock_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✏️ Followers", callback_data=f"admin:quick_field:{stock_id}:followers"),
          InlineKeyboardButton("💰 Price", callback_data=f"admin:quick_field:{stock_id}:price")],
+        [InlineKeyboardButton(
+            "📂 Page Type", callback_data=f"admin:quick_field:{stock_id}:page_type"
+        )],
         [InlineKeyboardButton("🔗 Facebook Link", callback_data=f"admin:quick_field:{stock_id}:fb_link")],
         [InlineKeyboardButton("🟢 Status", callback_data=f"admin:quick_status:{stock_id}")],
         [InlineKeyboardButton("🖼️ Photos", callback_data=f"admin:photo_manager:{stock_id}")],
@@ -324,6 +340,9 @@ def admin_edit_menu(stock_id):
          InlineKeyboardButton("Price", callback_data=f"admin:edit_field:{stock_id}:price")],
         [InlineKeyboardButton("Country", callback_data=f"admin:edit_field:{stock_id}:country"),
          InlineKeyboardButton("Audience", callback_data=f"admin:edit_field:{stock_id}:audience")],
+        [InlineKeyboardButton(
+            "Page Type", callback_data=f"admin:edit_field:{stock_id}:page_type"
+        )],
         [InlineKeyboardButton("Quality", callback_data=f"admin:edit_field:{stock_id}:quality"),
          InlineKeyboardButton("Description", callback_data=f"admin:edit_field:{stock_id}:description")],
         [InlineKeyboardButton("Facebook Link", callback_data=f"admin:edit_field:{stock_id}:fb_link")],
@@ -351,6 +370,19 @@ def country_choices(country="Cambodia"):
             callback_data=f"admin:wizard:country:{country}",
         )
     ]])
+
+
+def page_type_choices():
+    rows = [
+        [KeyboardButton(value) for value in PAGE_TYPES[offset:offset + 2]]
+        for offset in range(0, len(PAGE_TYPES), 2)
+    ]
+    rows.append([KeyboardButton("⬅️ Back"), KeyboardButton("❌ Cancel")])
+    return ReplyKeyboardMarkup(
+        rows,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
 
 
 def audience_choices():
