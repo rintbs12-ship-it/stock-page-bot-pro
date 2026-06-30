@@ -11,7 +11,7 @@ from telegram import (
     Update,
 )
 from telegram.error import BadRequest, TelegramError
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 from handlers.backup import handle_backup_callback, handle_restore_document
 from handlers.settings import handle_settings_callback, handle_settings_message
 from handlers.orders import (
@@ -132,8 +132,104 @@ Please choose a menu below:
 """,
 }
 
+WIZARD_STEPS = (
+    "followers", "price", "country", "audience", "female_percent",
+    "male_percent", "quality_percent", "real_followers", "organic_reach",
+    "monetized", "no_violation", "ready_transfer", "business_ready",
+    "fb_link", "status",
+)
+
+WIZARD_PROMPTS = {
+    "followers": "🛠️ Add Stock Wizard\n\n1/15 Followers\nExample: 15 or 15K",
+    "price": "🛠️ Add Stock Wizard\n\n2/15 Price\nExample: $25",
+    "country": "🛠️ Add Stock Wizard\n\n3/15 Country",
+    "audience": "🛠️ Add Stock Wizard\n\n4/15 Audience type",
+    "female_percent": "🛠️ Add Stock Wizard\n\n5/15 Female percent\nExample: 55",
+    "male_percent": "🛠️ Add Stock Wizard\n\n6/15 Male percent\nExample: 45",
+    "quality_percent": "🛠️ Add Stock Wizard\n\n7/15 Quality percent",
+    "real_followers": "🛠️ Add Stock Wizard\n\n8/15 Real Followers",
+    "organic_reach": "🛠️ Add Stock Wizard\n\n9/15 Organic Reach",
+    "monetized": "🛠️ Add Stock Wizard\n\n10/15 Monetized",
+    "no_violation": "🛠️ Add Stock Wizard\n\n11/15 No Policy Violation",
+    "ready_transfer": "🛠️ Add Stock Wizard\n\n12/15 Ready to Transfer",
+    "business_ready": "🛠️ Add Stock Wizard\n\n13/15 Business Ready",
+    "fb_link": "🛠️ Add Stock Wizard\n\n14/15 Facebook Page Link",
+    "status": "🛠️ Add Stock Wizard\n\n15/15 Status",
+}
+
 def is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
+
+
+def _clear_wizard_state(context):
+    context.user_data.clear()
+    chat_data = getattr(context, "chat_data", None)
+    if chat_data is not None:
+        for key in list(chat_data):
+            if key in {"admin_mode", "admin_step", "draft"} or str(key).startswith(
+                ("wizard", "add_stock")
+            ):
+                chat_data.pop(key, None)
+
+
+def _wizard_is_valid(context, expected_step=None):
+    if context.user_data.get("admin_mode") != "create":
+        return False
+    step = context.user_data.get("admin_step")
+    draft = context.user_data.get("draft")
+    if step not in WIZARD_STEPS or not isinstance(draft, dict):
+        return False
+    if expected_step is not None and step != expected_step:
+        return False
+    step_index = WIZARD_STEPS.index(step)
+    return all(field in draft for field in WIZARD_STEPS[:step_index])
+
+
+def _wizard_keyboard(step):
+    if step == "country":
+        base = country_choices(get_setting("default_country", "Cambodia"))
+    elif step == "audience":
+        base = audience_choices()
+    elif step == "quality_percent":
+        base = quality_percent_choices(get_setting("default_quality", "100"))
+    elif step in {
+        "real_followers", "monetized", "no_violation",
+        "ready_transfer", "business_ready",
+    }:
+        base = yes_no_choices(step)
+    elif step == "organic_reach":
+        base = organic_reach_choices()
+    elif step == "status":
+        base = status_choices()
+    else:
+        base = InlineKeyboardMarkup([])
+    rows = [list(row) for row in base.inline_keyboard]
+    rows.append([
+        InlineKeyboardButton("⬅️ Back", callback_data="admin:wizard:back"),
+        InlineKeyboardButton("❌ Cancel", callback_data="admin:wizard:cancel"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _render_wizard_prompt(message, context, edit=False, text=None):
+    step = context.user_data["admin_step"]
+    method = message.edit_message_text if edit else message.reply_text
+    await method(
+        text or WIZARD_PROMPTS[step],
+        reply_markup=_wizard_keyboard(step),
+    )
+
+
+async def _recover_invalid_wizard(message, context, user_id, edit=False):
+    clear_photo_upload_session(user_id)
+    _clear_wizard_state(context)
+    language = get_user_language(user_id)
+    method = message.edit_message_text if edit else message.reply_text
+    await method(
+        "⚠️ Add Stock session expired. Please start again.",
+        reply_markup=main_menu(is_admin(user_id), language),
+    )
+    return ConversationHandler.END
 
 
 def get_welcome_text(language):
@@ -460,8 +556,9 @@ def build_stock_report(stats, report_date=None):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
     uid = update.effective_user.id
+    clear_photo_upload_session(uid)
+    _clear_wizard_state(context)
     user = update.effective_user
     upsert_customer_profile(
         uid,
@@ -483,19 +580,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         get_welcome_text(language),
         reply_markup=main_menu(is_admin(uid), language),
     )
+    return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    was_add_stock = context.user_data.get("admin_mode") == "create"
     clear_photo_upload_session(user_id)
-    context.user_data.clear()
+    _clear_wizard_state(context)
     if is_admin(user_id):
         await update.message.reply_text(
-            "✅ Action cancelled.",
+            "❌ Add Stock cancelled." if was_add_stock else "✅ Action cancelled.",
             reply_markup=admin_home(),
         )
     else:
         await start(update, context)
+    return ConversationHandler.END
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -864,13 +964,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin:add":
         clear_photo_upload_session(uid)
-        context.user_data.clear()
+        _clear_wizard_state(context)
         context.user_data["admin_mode"] = "create"
         context.user_data["admin_step"] = "followers"
         context.user_data["draft"] = {}
+        await _render_wizard_prompt(query, context, edit=True)
+        return
+
+    if data == "admin:wizard:cancel":
+        clear_photo_upload_session(uid)
+        _clear_wizard_state(context)
         await query.edit_message_text(
-            "🛠️ Add Stock Wizard\n\n1/15 Followers\nExample: 15 or 15K"
+            "❌ Add Stock cancelled.",
+            reply_markup=admin_home(),
         )
+        return ConversationHandler.END
+
+    if data == "admin:wizard:back":
+        if not _wizard_is_valid(context):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
+        step = context.user_data["admin_step"]
+        step_index = WIZARD_STEPS.index(step)
+        if step_index == 0:
+            _clear_wizard_state(context)
+            await query.edit_message_text(
+                "👑 Admin Panel",
+                reply_markup=admin_home(),
+            )
+            return ConversationHandler.END
+        context.user_data["admin_step"] = WIZARD_STEPS[step_index - 1]
+        await _render_wizard_prompt(query, context, edit=True)
         return
 
     if data == "admin:stats_export":
@@ -1206,75 +1329,60 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("admin:wizard:country:"):
-        if context.user_data.get("admin_step") != "country":
-            await query.edit_message_text("This wizard has expired.", reply_markup=admin_home())
-            return
+        if not _wizard_is_valid(context, "country"):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"]["country"] = data.rsplit(":", 1)[1]
         context.user_data["admin_step"] = "audience"
-        await query.edit_message_text(
-            "4/15 Audience type",
-            reply_markup=audience_choices(),
-        )
+        await _render_wizard_prompt(query, context, edit=True)
         return
 
     if data.startswith("admin:wizard:audience:"):
-        if context.user_data.get("admin_step") != "audience":
-            await query.edit_message_text("This wizard has expired.", reply_markup=admin_home())
-            return
+        if not _wizard_is_valid(context, "audience"):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"]["audience"] = data.rsplit(":", 1)[1]
         context.user_data["admin_step"] = "female_percent"
-        await query.edit_message_text("5/15 Female percent\nExample: 55")
+        await _render_wizard_prompt(query, context, edit=True)
         return
 
     if data.startswith("admin:wizard:quality_percent:"):
-        if context.user_data.get("admin_step") != "quality_percent":
-            await query.edit_message_text("This wizard has expired.", reply_markup=admin_home())
-            return
+        if not _wizard_is_valid(context, "quality_percent"):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"]["quality_percent"] = int(data.rsplit(":", 1)[1])
         context.user_data["admin_step"] = "real_followers"
-        await query.edit_message_text(
-            "8/15 Real Followers",
-            reply_markup=yes_no_choices("real_followers"),
-        )
+        await _render_wizard_prompt(query, context, edit=True)
         return
 
     if data.startswith("admin:wizard:reach:"):
-        if context.user_data.get("admin_step") != "organic_reach":
-            await query.edit_message_text("This wizard has expired.", reply_markup=admin_home())
-            return
+        if not _wizard_is_valid(context, "organic_reach"):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"]["organic_reach"] = data.rsplit(":", 1)[1]
         context.user_data["admin_step"] = "monetized"
-        await query.edit_message_text(
-            "10/15 Monetized",
-            reply_markup=yes_no_choices("monetized"),
-        )
+        await _render_wizard_prompt(query, context, edit=True)
         return
 
     if data.startswith("admin:wizard:bool:"):
         _, _, _, field, raw_value = data.split(":")
-        expected_steps = {
-            "real_followers": ("organic_reach", "9/15 Organic Reach", organic_reach_choices()),
-            "monetized": ("no_violation", "11/15 No Policy Violation", yes_no_choices("no_violation")),
-            "no_violation": ("ready_transfer", "12/15 Ready to Transfer", yes_no_choices("ready_transfer")),
-            "ready_transfer": ("business_ready", "13/15 Business Ready", yes_no_choices("business_ready")),
+        next_steps = {
+            "real_followers": "organic_reach",
+            "monetized": "no_violation",
+            "no_violation": "ready_transfer",
+            "ready_transfer": "business_ready",
         }
-        if context.user_data.get("admin_step") != field:
-            await query.edit_message_text("This wizard has expired.", reply_markup=admin_home())
-            return
+        if field not in {*next_steps, "business_ready"} or not _wizard_is_valid(
+            context, field
+        ):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"][field] = int(raw_value)
         if field == "business_ready":
             context.user_data["admin_step"] = "fb_link"
-            await query.edit_message_text("14/15 Facebook Page Link")
-            return
-        next_step, prompt, markup = expected_steps[field]
-        context.user_data["admin_step"] = next_step
-        await query.edit_message_text(prompt, reply_markup=markup)
+        else:
+            context.user_data["admin_step"] = next_steps[field]
+        await _render_wizard_prompt(query, context, edit=True)
         return
 
     if data.startswith("admin:wizard:status:"):
-        if context.user_data.get("admin_mode") != "create" or context.user_data.get("admin_step") != "status":
-            await query.edit_message_text("This wizard has expired.", reply_markup=admin_home())
-            return
+        if not _wizard_is_valid(context, "status"):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
         status = normalize_status(data.rsplit(":", 1)[1])
         stock_id = save_stock_draft(context, status)
         add_audit_log(
@@ -1288,6 +1396,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📷 Now send as many photos as needed. Send /done when finished.",
         )
         return
+
+    if data.startswith("admin:wizard:"):
+        return await _recover_invalid_wizard(query, context, uid, edit=True)
 
     await query.message.reply_text(
         "⚠️ This action is unavailable or has expired. Please open the menu again."
@@ -1334,6 +1445,11 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     language = get_user_language(user_id)
+
+    if context.user_data.get("admin_mode") == "create" and not _wizard_is_valid(
+        context
+    ):
+        return await _recover_invalid_wizard(update.message, context, user_id)
 
     # Broadcast documents must be consumed before the Backup restore handler.
     if is_admin(user_id) and await handle_notification_message(update, context):
@@ -1391,9 +1507,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if update.message.photo:
-        await update.message.reply_text(
-            "Complete the Add Stock information before sending photos."
-        )
+        if context.user_data.get("admin_mode") == "create":
+            await _render_wizard_prompt(
+                update.message,
+                context,
+                text="Complete the Add Stock information before sending photos.",
+            )
+        else:
+            await update.message.reply_text(
+                "Complete the Add Stock information before sending photos."
+            )
         return
 
     if context.user_data.get("advanced_search"):
@@ -1521,45 +1644,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        if context.user_data.get("admin_mode") == "create" and not _wizard_is_valid(
+            context
+        ):
+            return await _recover_invalid_wizard(
+                update.message, context, user_id
+            )
+
         if context.user_data.get("admin_step") == "followers":
             try:
                 followers = parse_followers_value(update.message.text)
             except ValueError:
-                await update.message.reply_text("សូមបញ្ចូល Followers เป็นตัวเลขเท่านั้น (ឧ. 15 ឬ 15K)")
+                await _render_wizard_prompt(
+                    update.message, context,
+                    text="សូមបញ្ចូល Followers เป็นตัวเลขเท่านั้น (ឧ. 15 ឬ 15K)",
+                )
                 return
             context.user_data.setdefault("draft", {})["followers"] = followers
             context.user_data["admin_step"] = "price"
-            await update.message.reply_text("2/15 Price\nExample: $25")
+            await _render_wizard_prompt(update.message, context)
             return
 
         if context.user_data.get("admin_step") == "price":
             try:
                 price = apply_default_currency(update.message.text)
             except ValueError as exc:
-                await update.message.reply_text(str(exc))
+                await _render_wizard_prompt(
+                    update.message, context, text=str(exc)
+                )
                 return
             context.user_data.setdefault("draft", {})["price"] = price
             context.user_data["admin_step"] = "country"
-            default_country = get_setting("default_country", "Cambodia")
-            await update.message.reply_text(
-                "3/15 Country",
-                reply_markup=country_choices(default_country),
-            )
+            await _render_wizard_prompt(update.message, context)
             return
 
         if context.user_data.get("admin_step") == "country":
-            await update.message.reply_text(
-                "Please use the country button.",
-                reply_markup=country_choices(
-                    get_setting("default_country", "Cambodia")
-                ),
+            await _render_wizard_prompt(
+                update.message, context, text="Please use the country button."
             )
             return
 
         if context.user_data.get("admin_step") == "audience":
-            await update.message.reply_text(
-                "Please choose an Audience type.",
-                reply_markup=audience_choices(),
+            await _render_wizard_prompt(
+                update.message, context, text="Please choose an Audience type."
             )
             return
 
@@ -1567,41 +1694,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 female_percent = parse_percent(update.message.text)
             except ValueError as exc:
-                await update.message.reply_text(f"Invalid percent: {exc}")
+                await _render_wizard_prompt(
+                    update.message, context, text=f"Invalid percent: {exc}"
+                )
                 return
             context.user_data["draft"]["female_percent"] = female_percent
             context.user_data["admin_step"] = "male_percent"
-            await update.message.reply_text("6/15 Male percent\nExample: 45")
+            await _render_wizard_prompt(update.message, context)
             return
 
         if context.user_data.get("admin_step") == "male_percent":
             try:
                 male_percent = parse_percent(update.message.text)
             except ValueError as exc:
-                await update.message.reply_text(f"Invalid percent: {exc}")
+                await _render_wizard_prompt(
+                    update.message, context, text=f"Invalid percent: {exc}"
+                )
                 return
             female_percent = context.user_data["draft"]["female_percent"]
             if female_percent + male_percent != 100:
-                await update.message.reply_text(
-                    f"Female + Male must equal 100 (currently {female_percent + male_percent})."
+                await _render_wizard_prompt(
+                    update.message,
+                    context,
+                    text=(
+                        "Female + Male must equal 100 "
+                        f"(currently {female_percent + male_percent})."
+                    ),
                 )
                 return
             context.user_data["draft"]["male_percent"] = male_percent
             context.user_data["admin_step"] = "quality_percent"
-            await update.message.reply_text(
-                "7/15 Quality percent",
-                reply_markup=quality_percent_choices(
-                    get_setting("default_quality", "100")
-                ),
-            )
+            await _render_wizard_prompt(update.message, context)
             return
 
         if context.user_data.get("admin_step") == "quality_percent":
-            await update.message.reply_text(
-                "Please choose a Quality percent.",
-                reply_markup=quality_percent_choices(
-                    get_setting("default_quality", "100")
-                ),
+            await _render_wizard_prompt(
+                update.message, context, text="Please choose a Quality percent."
             )
             return
 
@@ -1609,17 +1737,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "real_followers", "monetized", "no_violation",
             "ready_transfer", "business_ready",
         }:
-            field = context.user_data["admin_step"]
-            await update.message.reply_text(
-                "Please use Yes or No.",
-                reply_markup=yes_no_choices(field),
+            await _render_wizard_prompt(
+                update.message, context, text="Please use Yes or No."
             )
             return
 
         if context.user_data.get("admin_step") == "organic_reach":
-            await update.message.reply_text(
-                "Please choose Organic Reach.",
-                reply_markup=organic_reach_choices(),
+            await _render_wizard_prompt(
+                update.message, context, text="Please choose Organic Reach."
             )
             return
 
@@ -1630,23 +1755,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Facebook Link",
                 )
             except ValueError as exc:
-                await update.message.reply_text(f"Invalid value: {exc}")
+                await _render_wizard_prompt(
+                    update.message, context, text=f"Invalid value: {exc}"
+                )
                 return
             context.user_data.setdefault("draft", {})["fb_link"] = fb_link
             context.user_data["admin_step"] = "status"
-            await update.message.reply_text(
-                "15/15 Status",
-                reply_markup=status_choices(),
-            )
+            await _render_wizard_prompt(update.message, context)
             return
 
         if context.user_data.get("admin_step") == "status":
             try:
                 status = normalize_status(update.message.text)
             except ValueError:
-                await update.message.reply_text(
-                    "Choose Available or Sold.",
-                    reply_markup=status_choices(),
+                await _render_wizard_prompt(
+                    update.message, context,
+                    text="Choose Available or Sold.",
                 )
                 return
             stock_id = save_stock_draft(context, status)

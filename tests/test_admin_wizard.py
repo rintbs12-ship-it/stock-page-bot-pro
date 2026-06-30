@@ -57,12 +57,15 @@ from handlers.orders import (
     start_order,
 )
 from handlers.menu import (
+    WIZARD_STEPS,
+    _wizard_keyboard,
     begin_photo_upload,
     build_stock_report,
     customer_stock_text,
     apply_default_currency,
     format_statistics_dashboard,
     get_welcome_text,
+    handle_callback,
     handle_command,
     handle_text,
     normalize_quality,
@@ -70,6 +73,8 @@ from handlers.menu import (
     parse_percent,
     parse_followers_value,
     save_stock_draft,
+    start,
+    cancel,
     validate_http_url,
 )
 from keyboards.buttons import (
@@ -1566,6 +1571,195 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_add_stock_back_preserves_draft_and_renders_previous_step(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "wizard-back.db")
+            try:
+                db.init_db()
+                draft = {
+                    "followers": 15,
+                    "price": "$50",
+                    "country": "Cambodia",
+                    "audience": "female",
+                    "female_percent": 55,
+                }
+                context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create",
+                        "admin_step": "male_percent",
+                        "draft": draft,
+                    },
+                    chat_data={},
+                )
+                query = SimpleNamespace(
+                    data="admin:wizard:back",
+                    from_user=SimpleNamespace(id=619658883),
+                    answer=AsyncMock(),
+                    edit_message_text=AsyncMock(),
+                    message=SimpleNamespace(reply_text=AsyncMock()),
+                )
+                update = SimpleNamespace(callback_query=query)
+
+                await handle_callback(update, context)
+
+                self.assertEqual(context.user_data["admin_step"], "female_percent")
+                self.assertIs(context.user_data["draft"], draft)
+                self.assertEqual(context.user_data["draft"]["female_percent"], 55)
+                self.assertIn("5/15 Female percent", query.edit_message_text.await_args.args[0])
+                markup = query.edit_message_text.await_args.kwargs["reply_markup"]
+                callbacks = {
+                    button.callback_data
+                    for row in markup.inline_keyboard for button in row
+                }
+                self.assertIn("admin:wizard:back", callbacks)
+                self.assertIn("admin:wizard:cancel", callbacks)
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_add_stock_cancel_button_and_command_clear_wizard_state(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "wizard-cancel.db")
+            try:
+                db.init_db()
+                for step in WIZARD_STEPS:
+                    callbacks = {
+                        button.callback_data
+                        for row in _wizard_keyboard(step).inline_keyboard
+                        for button in row
+                    }
+                    self.assertIn("admin:wizard:back", callbacks)
+                    self.assertIn("admin:wizard:cancel", callbacks)
+
+                context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create", "admin_step": "followers",
+                        "draft": {},
+                    },
+                    chat_data={"wizard_note": "temporary", "other": "keep"},
+                )
+                query = SimpleNamespace(
+                    data="admin:wizard:cancel",
+                    from_user=SimpleNamespace(id=619658883),
+                    answer=AsyncMock(),
+                    edit_message_text=AsyncMock(),
+                    message=SimpleNamespace(reply_text=AsyncMock()),
+                )
+                result = await handle_callback(
+                    SimpleNamespace(callback_query=query), context
+                )
+                self.assertEqual(result, -1)
+                self.assertEqual(context.user_data, {})
+                self.assertNotIn("wizard_note", context.chat_data)
+                self.assertEqual(context.chat_data["other"], "keep")
+                self.assertEqual(
+                    query.edit_message_text.await_args.args[0],
+                    "❌ Add Stock cancelled.",
+                )
+
+                command_context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create", "admin_step": "followers",
+                        "draft": {},
+                    },
+                    chat_data={"add_stock_temp": True},
+                )
+                message = SimpleNamespace(reply_text=AsyncMock())
+                command_result = await cancel(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=message,
+                    ),
+                    command_context,
+                )
+                self.assertEqual(command_result, -1)
+                self.assertEqual(command_context.user_data, {})
+                self.assertEqual(command_context.chat_data, {})
+                self.assertEqual(
+                    message.reply_text.await_args.args[0],
+                    "❌ Add Stock cancelled.",
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_start_during_add_stock_clears_wizard_and_shows_main_menu(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "wizard-start.db")
+            try:
+                db.init_db()
+                context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create", "admin_step": "price",
+                        "draft": {"followers": 15},
+                    },
+                    chat_data={"wizard_state": "price"},
+                )
+                message = SimpleNamespace(
+                    reply_text=AsyncMock(), reply_photo=AsyncMock()
+                )
+                result = await start(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(
+                            id=619658883, username="owner",
+                            first_name="DORN", last_name="",
+                        ),
+                        message=message,
+                    ),
+                    context,
+                )
+                self.assertEqual(result, -1)
+                self.assertEqual(context.user_data, {})
+                self.assertEqual(context.chat_data, {})
+                markup = message.reply_text.await_args.kwargs["reply_markup"]
+                callbacks = {
+                    button.callback_data
+                    for row in markup.inline_keyboard for button in row
+                }
+                self.assertIn("admin:home", callbacks)
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_invalid_add_stock_state_recovers_to_main_menu(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "wizard-invalid.db")
+            try:
+                db.init_db()
+                context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create",
+                        "admin_step": "male_percent",
+                        "draft": {},
+                    },
+                    chat_data={"wizard_invalid": True},
+                )
+                message = SimpleNamespace(
+                    text="45", photo=None, reply_text=AsyncMock()
+                )
+                result = await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=message,
+                    ),
+                    context,
+                )
+                self.assertEqual(result, -1)
+                self.assertEqual(context.user_data, {})
+                self.assertEqual(context.chat_data, {})
+                self.assertIn(
+                    "Add Stock session expired",
+                    message.reply_text.await_args.args[0],
+                )
+                markup = message.reply_text.await_args.kwargs["reply_markup"]
+                self.assertTrue(any(
+                    button.callback_data == "admin:home"
+                    for row in markup.inline_keyboard for button in row
+                ))
+            finally:
+                db.DB_PATH = old_path
+
     async def test_non_admin_cannot_access_backup_manager(self):
         query = SimpleNamespace(
             data="admin:backup",
