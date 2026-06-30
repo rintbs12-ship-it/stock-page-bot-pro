@@ -1,5 +1,6 @@
 import sqlite3
 import re
+import json
 from datetime import datetime
 from config import DB_PATH
 
@@ -56,6 +57,7 @@ def init_db():
         "no_violation": "INTEGER DEFAULT 1",
         "ready_transfer": "INTEGER DEFAULT 1",
         "business_ready": "INTEGER DEFAULT 1",
+        "category": "TEXT DEFAULT ''",
     }
     existing_columns = {
         row[1] for row in cur.execute("PRAGMA table_info(stocks)").fetchall()
@@ -285,6 +287,26 @@ def init_db():
     )
     """)
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS saved_filters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        search_type TEXT NOT NULL,
+        filters TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT ''
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS recent_searches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        search_type TEXT NOT NULL,
+        query TEXT NOT NULL DEFAULT '',
+        filters TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT ''
+    )
+    """)
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS broadcast_recipients (
         broadcast_id INTEGER NOT NULL,
         telegram_id INTEGER NOT NULL,
@@ -308,6 +330,7 @@ def init_db():
         "admin_notes": "TEXT DEFAULT ''",
         "created_at": "TEXT DEFAULT ''",
         "updated_at": "TEXT DEFAULT ''",
+        "phone": "TEXT DEFAULT ''",
     }
     existing_customer_columns = {
         row[1]
@@ -332,7 +355,9 @@ def init_db():
     ).fetchall()
     migration_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for (telegram_id,) in profile_ids:
-        _refresh_customer_stats_cursor(cur, telegram_id, migration_time)
+        _refresh_customer_stats_cursor(
+            cur, telegram_id, migration_time, touch_activity=False
+        )
     cur.execute("""
         INSERT INTO order_receipts (order_id, file_id, uploaded_by, created_at)
         SELECT o.order_id, o.receipt_file_id, o.customer_id,
@@ -450,6 +475,14 @@ def init_db():
         "ON audit_logs(action, created_at DESC)"
     )
     cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_saved_filters_admin "
+        "ON saved_filters(admin_id, id DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recent_searches_admin "
+        "ON recent_searches(admin_id, id DESC)"
+    )
+    cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_payment_logs_action_created "
         "ON payment_logs(action, created_at)"
     )
@@ -533,6 +566,223 @@ def get_audit_actions():
     """).fetchall()
     con.close()
     return rows
+
+
+def add_recent_search(admin_id, search_type, query="", filters=None):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO recent_searches (
+            admin_id, search_type, query, filters, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+    """, (
+        int(admin_id), search_type, str(query or ""),
+        json.dumps(filters or {}, ensure_ascii=False, sort_keys=True),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    ))
+    search_id = cur.lastrowid
+    con.execute("""
+        DELETE FROM recent_searches
+        WHERE admin_id=? AND id NOT IN (
+            SELECT id FROM recent_searches
+            WHERE admin_id=? ORDER BY id DESC LIMIT 20
+        )
+    """, (int(admin_id), int(admin_id)))
+    con.commit()
+    con.close()
+    return search_id
+
+
+def get_recent_searches(admin_id, limit=10):
+    con = connect()
+    rows = con.execute("""
+        SELECT id, search_type, query, filters, created_at
+        FROM recent_searches WHERE admin_id=?
+        ORDER BY id DESC LIMIT ?
+    """, (int(admin_id), int(limit))).fetchall()
+    con.close()
+    return [
+        (row[0], row[1], row[2], json.loads(row[3] or "{}"), row[4])
+        for row in rows
+    ]
+
+
+def save_search_filter(admin_id, name, search_type, filters):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO saved_filters (
+            admin_id, name, search_type, filters, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+    """, (
+        int(admin_id), str(name)[:80], search_type,
+        json.dumps(filters or {}, ensure_ascii=False, sort_keys=True),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    ))
+    filter_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return filter_id
+
+
+def get_saved_filters(admin_id, limit=20):
+    con = connect()
+    rows = con.execute("""
+        SELECT id, name, search_type, filters, created_at
+        FROM saved_filters WHERE admin_id=?
+        ORDER BY id DESC LIMIT ?
+    """, (int(admin_id), int(limit))).fetchall()
+    con.close()
+    return [
+        (row[0], row[1], row[2], json.loads(row[3] or "{}"), row[4])
+        for row in rows
+    ]
+
+
+def delete_saved_filter(filter_id, admin_id):
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        "DELETE FROM saved_filters WHERE id=? AND admin_id=?",
+        (int(filter_id), int(admin_id)),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def global_admin_search(term, limit=100):
+    text = str(term or "").strip()
+    like = f"%{text.lstrip('@')}%"
+    numeric = int(text.lstrip("#")) if text.lstrip("#").isdigit() else -1
+    con = connect()
+    rows = []
+    for row in con.execute("""
+        SELECT id, followers, country, status FROM stocks WHERE id=? LIMIT ?
+    """, (numeric, limit)).fetchall():
+        rows.append(("Stock", row[0], f"Stock #{row[0]}", f"{row[1]}K · {row[2]} · {row[3]}"))
+    for row in con.execute("""
+        SELECT customer_id, telegram_id, username, first_name, last_name
+        FROM customer_profiles
+        WHERE customer_id=? OR telegram_id=?
+           OR LOWER(username) LIKE LOWER(?)
+           OR LOWER(first_name || ' ' || last_name) LIKE LOWER(?)
+        ORDER BY customer_id DESC LIMIT ?
+    """, (numeric, numeric, like, like, limit)).fetchall():
+        name = " ".join(part for part in row[3:5] if part) or row[2] or str(row[1])
+        rows.append(("Customer", row[1], f"Customer: {name}", f"Telegram {row[1]} · Profile #{row[0]}"))
+    for row in con.execute("""
+        SELECT order_id, customer_id, customer_username, status
+        FROM orders
+        WHERE order_id=? OR customer_id=?
+           OR LOWER(customer_username) LIKE LOWER(?)
+        ORDER BY order_id DESC LIMIT ?
+    """, (numeric, numeric, like, limit)).fetchall():
+        rows.append(("Order", row[0], f"Order #{row[0]}", f"Customer {row[1]} · {row[2]} · {row[3]}"))
+    con.close()
+    return rows[:limit]
+
+
+def advanced_admin_search(search_type, filters=None, page=1, per_page=10):
+    filters = filters or {}
+    page = max(1, int(page))
+    per_page = max(1, min(100, int(per_page)))
+    clauses = []
+    params = []
+    if search_type == "stock":
+        columns = ("id", "followers", "country", "audience", "price", "quality", "status", "category")
+        table = "stocks"
+        keyword = str(filters.get("keyword", "")).strip()
+        if keyword:
+            like = f"%{keyword}%"
+            clauses.append("""(
+                CAST(id AS TEXT) LIKE ? OR description LIKE ? OR country LIKE ?
+                OR audience LIKE ? OR category LIKE ?
+            )""")
+            params.extend([like] * 5)
+        if filters.get("price_min") not in (None, ""):
+            clauses.append("CAST(REPLACE(REPLACE(price, '$', ''), ',', '') AS REAL)>=?")
+            params.append(float(filters["price_min"]))
+        if filters.get("price_max") not in (None, ""):
+            clauses.append("CAST(REPLACE(REPLACE(price, '$', ''), ',', '') AS REAL)<=?")
+            params.append(float(filters["price_max"]))
+        for key in ("quality", "country", "status"):
+            if filters.get(key):
+                clauses.append(f"LOWER({key})=LOWER(?)")
+                params.append(filters[key])
+        if filters.get("category"):
+            clauses.append("(LOWER(category)=LOWER(?) OR LOWER(audience)=LOWER(?))")
+            params.extend([filters["category"], filters["category"]])
+        order_by = "id DESC"
+    elif search_type == "customer":
+        columns = (
+            "customer_id", "telegram_id", "username", "first_name", "last_name",
+            "phone", "total_orders", "total_spent", "is_vip", "updated_at",
+        )
+        table = "customer_profiles"
+        for key, expression in (
+            ("name", "LOWER(first_name || ' ' || last_name) LIKE LOWER(?)"),
+            ("username", "LOWER(username) LIKE LOWER(?)"),
+            ("phone", "phone LIKE ?"),
+        ):
+            if filters.get(key):
+                clauses.append(expression)
+                params.append(f"%{str(filters[key]).lstrip('@')}%")
+        if filters.get("orders_min") not in (None, ""):
+            clauses.append("total_orders>=?")
+            params.append(int(filters["orders_min"]))
+        if filters.get("spending_min") not in (None, ""):
+            clauses.append("total_spent>=?")
+            params.append(float(filters["spending_min"]))
+        smart = filters.get("smart")
+        if smart == "vip":
+            clauses.append("is_vip=1")
+        elif smart == "high_value":
+            clauses.append("total_spent>=?")
+            params.append(float(filters.get("high_value_min", 100)))
+        elif smart == "recent_active":
+            clauses.append("updated_at>=datetime('now', 'localtime', '-7 days')")
+        elif smart == "inactive":
+            clauses.append("(updated_at='' OR updated_at<datetime('now', 'localtime', '-30 days'))")
+        order_by = "updated_at DESC, customer_id DESC"
+    elif search_type == "order":
+        columns = (
+            "order_id", "stock_id", "customer_id", "customer_username",
+            "price", "status", "created_at", "updated_at",
+        )
+        table = "orders"
+        status_groups = {
+            "pending": ("waiting_payment", "waiting_receipt", "waiting_admin_confirm"),
+            "paid": ("payment_confirmed", "payment_received", "waiting_customer_info", "admin_processing", "admin_added", "waiting_customer_accept", "customer_accepted", "waiting_remove_admin"),
+            "completed": ("completed",),
+            "cancelled": ("cancelled",),
+        }
+        if filters.get("status") in status_groups:
+            statuses = status_groups[filters["status"]]
+            clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        if filters.get("date_from"):
+            clauses.append("date(created_at)>=date(?)")
+            params.append(filters["date_from"])
+        if filters.get("date_to"):
+            clauses.append("date(created_at)<=date(?)")
+            params.append(filters["date_to"])
+        if filters.get("recent"):
+            clauses.append("created_at>=datetime('now', 'localtime', '-7 days')")
+        order_by = "order_id DESC"
+    else:
+        return (), [], 0
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    con = connect()
+    total = con.execute(f"SELECT COUNT(*) FROM {table}{where}", params).fetchone()[0]
+    rows = con.execute(
+        f"SELECT {', '.join(columns)} FROM {table}{where} "
+        f"ORDER BY {order_by} LIMIT ? OFFSET ?",
+        params + [per_page, (page - 1) * per_page],
+    ).fetchall()
+    con.close()
+    return columns, rows, total
 
 
 def add_demo_stock_if_empty():
@@ -1368,26 +1618,31 @@ def _price_number(value):
     return float(match.group(0)) if match else 0.0
 
 
-def _refresh_customer_stats_cursor(cur, telegram_id, now=None):
+def _refresh_customer_stats_cursor(
+    cur, telegram_id, now=None, touch_activity=True
+):
     now = now or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows = cur.execute(
         "SELECT status, price FROM orders WHERE customer_id=?",
         (telegram_id,),
     ).fetchall()
     completed = [row for row in rows if row[0] == "completed"]
-    cur.execute("""
-        UPDATE customer_profiles
-        SET total_orders=?, completed_orders=?, cancelled_orders=?,
-            total_spent=?, updated_at=?
-        WHERE telegram_id=?
-    """, (
+    activity_update = ", updated_at=?" if touch_activity else ""
+    params = [
         len(rows),
         len(completed),
         sum(1 for row in rows if row[0] == "cancelled"),
         sum(_price_number(row[1]) for row in completed),
-        now,
-        telegram_id,
-    ))
+    ]
+    if touch_activity:
+        params.append(now)
+    params.append(telegram_id)
+    cur.execute(f"""
+        UPDATE customer_profiles
+        SET total_orders=?, completed_orders=?, cancelled_orders=?,
+            total_spent=?{activity_update}
+        WHERE telegram_id=?
+    """, params)
 
 
 def upsert_customer_profile(

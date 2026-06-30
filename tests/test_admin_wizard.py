@@ -34,6 +34,11 @@ from handlers.audit import (
     audit_logs_keyboard,
     export_audit_csv,
 )
+from handlers.admin_search import (
+    PER_PAGE as SEARCH_PER_PAGE,
+    export_search_csv,
+    search_home_menu,
+)
 from handlers.orders import (
     format_order,
     handle_admin_order_callback,
@@ -260,11 +265,139 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:customers",
                 "admin:notify",
                 "admin:audit",
+                "admin:search",
                 "admin:settings",
                 "admin:backup",
                 "home",
             },
         )
+
+    def test_advanced_search_persistence_filters_and_pagination(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "advanced-search.db")
+            try:
+                db.init_db()
+                stock_ids = []
+                for index in range(12):
+                    stock_id = db.create_stock(
+                        10 + index, "Cambodia" if index % 2 == 0 else "Thailand",
+                        "Business", f"${50 + index * 10}", "100%", "Gaming page",
+                        f"https://facebook.com/{index}",
+                        "available" if index < 10 else "sold",
+                    )
+                    stock_ids.append(stock_id)
+                con = db.connect()
+                con.execute(
+                    "UPDATE stocks SET category='Gaming' WHERE id=?",
+                    (stock_ids[0],),
+                )
+                con.commit()
+                con.close()
+
+                for index in range(3):
+                    telegram_id = 8000 + index
+                    db.upsert_customer_profile(
+                        telegram_id, f"user{index}", f"Name{index}", "Buyer"
+                    )
+                    order_id = db.create_order(
+                        stock_ids[index], telegram_id, f"user{index}",
+                        f"${100 + index * 100}",
+                    )
+                    con = db.connect()
+                    con.execute(
+                        "UPDATE customer_profiles SET phone=?, is_vip=?, "
+                        "total_orders=?, total_spent=?, updated_at=? "
+                        "WHERE telegram_id=?",
+                        (
+                            f"01200000{index}", 1 if index == 0 else 0,
+                            index + 1, 150 + index * 200,
+                            "2020-01-01 00:00:00" if index == 2
+                            else datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            telegram_id,
+                        ),
+                    )
+                    con.execute(
+                        "UPDATE orders SET status=?, created_at=? WHERE order_id=?",
+                        (
+                            ("waiting_payment", "payment_received", "completed")[index],
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            order_id,
+                        ),
+                    )
+                    con.commit()
+                    con.close()
+
+                columns, rows, total = db.advanced_admin_search(
+                    "stock", {"keyword": "Gaming"}, 1, SEARCH_PER_PAGE
+                )
+                self.assertEqual(total, 12)
+                self.assertEqual(len(rows), SEARCH_PER_PAGE)
+                _, category_rows, category_total = db.advanced_admin_search(
+                    "stock", {"category": "Gaming"}
+                )
+                self.assertEqual(category_total, 1)
+                _, price_rows, price_total = db.advanced_admin_search(
+                    "stock", {"price_min": 100, "price_max": 120}
+                )
+                self.assertEqual(price_total, 3)
+                _, vip_rows, vip_total = db.advanced_admin_search(
+                    "customer", {"smart": "vip"}
+                )
+                self.assertEqual(vip_total, 1)
+                self.assertEqual(vip_rows[0][1], 8000)
+                _, inactive_rows, inactive_total = db.advanced_admin_search(
+                    "customer", {"smart": "inactive"}
+                )
+                self.assertEqual(inactive_total, 1)
+                self.assertEqual(inactive_rows[0][1], 8002)
+                _, phone_rows, phone_total = db.advanced_admin_search(
+                    "customer", {"phone": "012000001"}
+                )
+                self.assertEqual(phone_total, 1)
+                _, paid_rows, paid_total = db.advanced_admin_search(
+                    "order", {"status": "paid"}
+                )
+                self.assertEqual(paid_total, 1)
+                self.assertEqual(paid_rows[0][2], 8001)
+
+                global_rows = db.global_admin_search("Name1")
+                self.assertTrue(any(row[0] == "Customer" for row in global_rows))
+                global_order = db.global_admin_search("2")
+                self.assertTrue(any(row[0] == "Order" for row in global_order))
+
+                saved_id = db.save_search_filter(
+                    619658883, "VIP buyers", "customer", {"smart": "vip"}
+                )
+                saved = db.get_saved_filters(619658883)
+                self.assertEqual(saved[0][0], saved_id)
+                self.assertEqual(saved[0][3], {"smart": "vip"})
+                db.add_recent_search(
+                    619658883, "stock", query="Gaming",
+                    filters={"country": "Cambodia"},
+                )
+                recent = db.get_recent_searches(619658883)
+                self.assertEqual(recent[0][2], "Gaming")
+                self.assertEqual(recent[0][3], {"country": "Cambodia"})
+                csv_text = export_search_csv({
+                    "type": "stock", "filters": {"keyword": "Gaming"}
+                }).decode("utf-8-sig")
+                self.assertEqual(len(csv_text.splitlines()), 13)
+                self.assertIn("followers", csv_text.splitlines()[0])
+
+                callbacks = {
+                    button.callback_data
+                    for row in search_home_menu().inline_keyboard
+                    for button in row
+                }
+                self.assertTrue({
+                    "admin:search:global", "admin:search:type:stock",
+                    "admin:search:type:customer", "admin:search:type:order",
+                    "admin:search:smart", "admin:search:saved",
+                    "admin:search:recent",
+                }.issubset(callbacks))
+            finally:
+                db.DB_PATH = old_path
 
     def test_audit_log_migration_filters_search_pagination_and_csv(self):
         old_path = db.DB_PATH

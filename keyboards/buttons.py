@@ -198,6 +198,7 @@ def admin_home():
             "📢 Notification Center", callback_data="admin:notify"
         )],
         [InlineKeyboardButton("📜 Audit Logs", callback_data="admin:audit")],
+        [InlineKeyboardButton("🔎 Advanced Search", callback_data="admin:search")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="admin:settings"),
          InlineKeyboardButton("💾 Backup Manager", callback_data="admin:backup")],
         [InlineKeyboardButton("⬅️ Back", callback_data="home")]
