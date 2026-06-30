@@ -57,6 +57,7 @@ from handlers.orders import (
     start_order,
 )
 from handlers.menu import (
+    WIZARD_PROMPTS,
     WIZARD_STEPS,
     _wizard_keyboard,
     begin_photo_upload,
@@ -1609,6 +1610,121 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _ready_transfer_context(value=None):
+        draft = {
+            field: value if value is not None else f"{field}-value"
+            for field in WIZARD_STEPS[:12]
+        }
+        return SimpleNamespace(
+            user_data={
+                "admin_mode": "create",
+                "admin_step": "ready_transfer",
+                "draft": draft,
+            },
+            chat_data={},
+        )
+
+    @staticmethod
+    def _wizard_query(data):
+        return SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=619658883),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+
+    async def test_ready_transfer_yes_and_no_advance_to_business_ready(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "ready-transfer-values.db")
+            try:
+                db.init_db()
+                markup = _wizard_keyboard("ready_transfer")
+                callbacks = {
+                    button.text: button.callback_data
+                    for row in markup.inline_keyboard for button in row
+                }
+                self.assertEqual(
+                    callbacks["✅ បាទ / Yes"],
+                    "admin:wizard:bool:ready_transfer:1",
+                )
+                self.assertEqual(
+                    callbacks["❌ ទេ / No"],
+                    "admin:wizard:bool:ready_transfer:0",
+                )
+
+                for raw_value, expected in (("1", 1), ("0", 0)):
+                    context = self._ready_transfer_context()
+                    query = self._wizard_query(
+                        f"admin:wizard:bool:ready_transfer:{raw_value}"
+                    )
+                    await handle_callback(
+                        SimpleNamespace(callback_query=query), context
+                    )
+                    self.assertEqual(
+                        context.user_data["draft"]["ready_transfer"], expected
+                    )
+                    self.assertEqual(
+                        context.user_data["admin_step"], "business_ready"
+                    )
+                    self.assertIn(
+                        "14/16 Business Ready",
+                        query.edit_message_text.await_args.args[0],
+                    )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_ready_transfer_back_and_cancel_navigation(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "ready-transfer-navigation.db")
+            try:
+                db.init_db()
+                context = self._ready_transfer_context()
+                original_draft = context.user_data["draft"]
+                back_query = self._wizard_query("admin:wizard:back")
+                await handle_callback(
+                    SimpleNamespace(callback_query=back_query), context
+                )
+                self.assertEqual(context.user_data["admin_step"], "no_violation")
+                self.assertIs(context.user_data["draft"], original_draft)
+                self.assertIn(
+                    "12/16 No Policy Violation",
+                    back_query.edit_message_text.await_args.args[0],
+                )
+
+                context = self._ready_transfer_context()
+                cancel_query = self._wizard_query("admin:wizard:cancel")
+                result = await handle_callback(
+                    SimpleNamespace(callback_query=cancel_query), context
+                )
+                self.assertEqual(result, -1)
+                self.assertEqual(context.user_data, {})
+                self.assertEqual(
+                    cancel_query.edit_message_text.await_args.args[0],
+                    "❌ Add Stock cancelled.",
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    def test_ready_transfer_is_present_in_wizard_state_and_prompt_mappings(self):
+        self.assertEqual(set(WIZARD_STEPS), set(WIZARD_PROMPTS))
+        self.assertEqual(WIZARD_STEPS[12], "ready_transfer")
+        self.assertEqual(WIZARD_STEPS[13], "business_ready")
+        callbacks = {
+            button.callback_data
+            for row in _wizard_keyboard("ready_transfer").inline_keyboard
+            for button in row
+        }
+        self.assertEqual(callbacks, {
+            "admin:wizard:bool:ready_transfer:1",
+            "admin:wizard:bool:ready_transfer:0",
+            "admin:wizard:back",
+            "admin:wizard:cancel",
+        })
+
     async def test_add_stock_page_type_reply_keyboard_and_selection(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:
