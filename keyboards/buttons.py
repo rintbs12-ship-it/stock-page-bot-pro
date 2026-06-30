@@ -4,6 +4,7 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
+from functools import wraps
 from config import TELEGRAM_CONTACT, FACEBOOK_CONTACT
 from database.db import get_menu_items, get_setting
 
@@ -23,6 +24,33 @@ PAGE_TYPES = (
     "Personal Blog", "TV / Media", "Books", "Fan Page", "E-commerce",
     "Art", "Photography", "Health", "Fitness", "Kids", "Fashion",
 )
+
+
+def add_cancel_button(markup):
+    rows = [list(row) for row in markup.inline_keyboard]
+    if any(
+        button.callback_data == "global:cancel"
+        for row in rows for button in row
+    ):
+        return markup
+    cancel_button = InlineKeyboardButton(
+        "❌ Cancel", callback_data="global:cancel"
+    )
+    if rows and any(
+        "Back" in (button.text or "") or "ត្រឡប់" in (button.text or "")
+        for button in rows[-1]
+    ):
+        rows[-1].append(cancel_button)
+    else:
+        rows.append([cancel_button])
+    return InlineKeyboardMarkup(rows)
+
+
+def with_cancel(factory):
+    @wraps(factory)
+    def wrapped(*args, **kwargs):
+        return add_cancel_button(factory(*args, **kwargs))
+    return wrapped
 
 
 def main_menu(is_admin=False, language="km"):
@@ -454,3 +482,13 @@ def admin_stock_picker(rows, action):
     ]
     keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="admin:home")])
     return InlineKeyboardMarkup(keyboard)
+
+
+for _navigation_name in (
+    "stocks_list", "stock_detail", "contact_menu", "language_choices",
+    "advanced_search_menu", "quality_search_menu", "customer_filters_menu",
+    "statistics_dashboard_menu", "admin_stock_actions", "quick_edit_menu",
+    "quick_status_choices", "photo_manager_menu", "photo_navigation",
+    "photo_multi_select_menu", "admin_edit_menu", "admin_stock_picker",
+):
+    globals()[_navigation_name] = with_cancel(globals()[_navigation_name])

@@ -24,6 +24,7 @@ from database.db import (
     set_setting,
 )
 from handlers.audit import admin_display_name
+from keyboards.buttons import with_cancel
 
 
 BACKUP_DIR = Path(DB_PATH).resolve().parent / "backups"
@@ -658,3 +659,12 @@ async def handle_restore_document(update, context):
         reply_markup=restore_confirmation_menu(),
     )
     return True
+
+
+for _navigation_name in (
+    "backup_manager_menu", "auto_backup_menu", "retention_menu",
+    "export_menu", "restore_confirmation_menu", "backup_history_menu",
+    "backup_restore_menu", "backup_restore_confirmation",
+    "backup_delete_confirmation",
+):
+    globals()[_navigation_name] = with_cancel(globals()[_navigation_name])

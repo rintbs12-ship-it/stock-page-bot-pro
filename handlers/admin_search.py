@@ -14,6 +14,7 @@ from database.db import (
     global_admin_search,
     save_search_filter,
 )
+from keyboards.buttons import with_cancel
 
 
 PER_PAGE = 10
@@ -437,3 +438,11 @@ async def handle_admin_search_message(update, context):
             reply_markup=_type_menu(state["type"]),
         )
     return True
+
+
+for _navigation_name in (
+    "search_home_menu", "stock_filter_menu", "customer_filter_menu",
+    "order_filter_menu", "smart_filter_menu", "_results_keyboard",
+    "_list_keyboard",
+):
+    globals()[_navigation_name] = with_cancel(globals()[_navigation_name])

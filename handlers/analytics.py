@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 
 from database.db import connect, is_admin_user
+from keyboards.buttons import with_cancel
 
 
 PERIODS = {
@@ -370,3 +371,6 @@ async def handle_analytics_callback(query, context):
         reply_markup=analytics_keyboard(analytics["period"]),
     )
     return True
+
+
+analytics_keyboard = with_cancel(analytics_keyboard)

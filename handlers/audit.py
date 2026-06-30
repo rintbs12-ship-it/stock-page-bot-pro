@@ -6,6 +6,7 @@ from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 
 from database.db import get_audit_actions, get_audit_admins, get_audit_logs
+from keyboards.buttons import with_cancel
 
 
 PER_PAGE = 20
@@ -217,3 +218,7 @@ async def handle_audit_message(update, context):
         reply_markup=audit_logs_keyboard(1, total),
     )
     return True
+
+
+audit_logs_keyboard = with_cancel(audit_logs_keyboard)
+_selection_keyboard = with_cancel(_selection_keyboard)

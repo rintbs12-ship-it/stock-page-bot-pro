@@ -31,6 +31,7 @@ from database.db import (
     verify_payment,
 )
 from handlers.audit import admin_display_name
+from keyboards.buttons import with_cancel
 
 
 STATUS_DISPLAY = {
@@ -97,6 +98,7 @@ def payment_buttons(order_id):
             "❌ Cancel Order",
             callback_data=f"order:cancel:{order_id}",
         )],
+        [InlineKeyboardButton("⬅ Back", callback_data="orders:mine")],
     ])
 
 
@@ -122,6 +124,9 @@ def admin_receipt_buttons(order_id, stock_id, customer_id=None):
             "👤 Customer Profile",
             callback_data=f"admin:customer:view:{customer_id}",
         )])
+    rows.append([InlineKeyboardButton(
+        "⬅ Back", callback_data=f"admin:order_manager_view:{order_id}"
+    )])
     return InlineKeyboardMarkup(rows)
 
 
@@ -161,6 +166,9 @@ def admin_processing_buttons(order_id, customer_id):
             "❌ Cancel Order",
             callback_data=f"admin:order_cancel:{order_id}",
         )],
+        [InlineKeyboardButton(
+            "⬅ Back", callback_data=f"admin:order_manager_view:{order_id}"
+        )],
     ])
 
 
@@ -174,6 +182,7 @@ def customer_accept_buttons(order_id):
             "🆘 Need Help",
             callback_data=f"order:help:{order_id}",
         )],
+        [InlineKeyboardButton("⬅ Back", callback_data=f"order:view:{order_id}")],
     ])
 
 
@@ -186,6 +195,9 @@ def admin_complete_buttons(order_id, customer_id):
         [InlineKeyboardButton(
             "🆘 Contact Customer",
             url=f"tg://user?id={customer_id}",
+        )],
+        [InlineKeyboardButton(
+            "⬅ Back", callback_data=f"admin:order_manager_view:{order_id}"
         )],
     ])
 
@@ -1326,3 +1338,15 @@ async def handle_order_message(update, context):
         return True
 
     return False
+
+
+for _navigation_name in (
+    "payment_buttons", "admin_receipt_buttons", "rejection_reason_buttons",
+    "admin_processing_buttons", "customer_accept_buttons",
+    "admin_complete_buttons", "orders_admin_menu", "order_manager_menu",
+    "order_search_menu", "order_filters_menu", "order_manager_list_keyboard",
+    "order_status_menu", "order_manager_detail_keyboard",
+    "remove_admin_confirmation", "customer_remove_admin_button",
+    "order_history_keyboard", "customer_order_detail_keyboard",
+):
+    globals()[_navigation_name] = with_cancel(globals()[_navigation_name])

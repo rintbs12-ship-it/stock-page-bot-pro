@@ -32,6 +32,7 @@ from handlers.backup import (
     prune_backups,
     run_due_auto_backup,
 )
+from keyboards.buttons import with_cancel
 
 
 REMINDER_TYPES = {
@@ -515,3 +516,10 @@ async def handle_scheduler_message(update, context):
         f"✅ Scheduled as Job #{job_id}.", reply_markup=scheduler_menu()
     )
     return True
+
+
+for _navigation_name in (
+    "scheduler_menu", "scheduled_announcements_menu",
+    "reminder_manager_menu", "maintenance_menu",
+):
+    globals()[_navigation_name] = with_cancel(globals()[_navigation_name])

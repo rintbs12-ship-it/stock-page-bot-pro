@@ -19,6 +19,7 @@ from database.db import (
     mark_broadcast_sending,
     search_customers,
 )
+from keyboards.buttons import with_cancel
 
 
 LOGGER = logging.getLogger(__name__)
@@ -385,3 +386,7 @@ async def notification_scheduler(bot, interval=30):
             except Exception:
                 LOGGER.exception("Could not persist broadcast scheduler failure")
         await asyncio.sleep(interval)
+
+
+notification_center_menu = with_cancel(notification_center_menu)
+selected_customers_keyboard = with_cancel(selected_customers_keyboard)

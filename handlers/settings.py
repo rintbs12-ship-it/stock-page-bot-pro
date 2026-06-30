@@ -17,6 +17,7 @@ from database.db import (
     update_menu_item,
 )
 from handlers.audit import admin_display_name
+from keyboards.buttons import with_cancel
 
 
 OWNER_ID = 619658883
@@ -858,3 +859,13 @@ async def handle_settings_message(update, context):
         return True
 
     return False
+
+
+for _navigation_name in (
+    "settings_menu", "back_to_settings", "profile_menu",
+    "contact_settings_menu", "choice_menu", "admin_manager_menu",
+    "menu_editor_keyboard", "menu_item_editor_keyboard",
+    "theme_editor_menu", "theme_style_menu", "theme_separator_menu",
+    "theme_icons_menu",
+):
+    globals()[_navigation_name] = with_cancel(globals()[_navigation_name])

@@ -16,6 +16,7 @@ from database.db import (
 )
 from handlers.audit import admin_display_name
 from handlers.orders import order_history_keyboard
+from keyboards.buttons import with_cancel
 
 
 RESTRICTED_MESSAGE = "🚫 Your account is restricted.\nPlease contact admin."
@@ -310,3 +311,10 @@ async def handle_crm_message(update, context):
         )
         return True
     return False
+
+
+for _navigation_name in (
+    "customer_profile_keyboard", "crm_home_keyboard",
+    "customer_list_keyboard", "admin_customer_keyboard",
+):
+    globals()[_navigation_name] = with_cancel(globals()[_navigation_name])

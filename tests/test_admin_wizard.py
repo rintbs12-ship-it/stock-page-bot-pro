@@ -247,6 +247,12 @@ class AdminWizardTests(unittest.TestCase):
                 self.assertFalse(any(
                     value and value.startswith("admin:") for value in callbacks
                 ))
+                self.assertNotIn("global:cancel", callbacks)
+                self.assertFalse(any(
+                    button.text in {"⬅️ Back", "❌ Cancel"}
+                    for row in menu.inline_keyboard
+                    for button in row
+                ))
                 self.assertEqual(
                     [len(row) for row in menu.inline_keyboard],
                     [2, 2, 2, 2, 2, 2, 1, 1, 1],
@@ -681,11 +687,13 @@ class AdminWizardTests(unittest.TestCase):
             "🖼️ មើលរូបភាព", "🌐 បើកផេក", "📋 ចម្លង Link",
             "💬 ទាក់ទង Admin", "🛒 ទិញឥឡូវនេះ", "⬅️ ត្រឡប់",
             "❤️ ចំណូលចិត្ត", "🔔 ជូនដំណឹង", "📤 ចែករំលែក",
+            "❌ Cancel",
         })
         self.assertEqual(english_labels, {
             "🖼️ View Photos", "🌐 Open Page", "📋 Copy Link",
             "💬 Contact Admin", "🛒 Buy Now", "⬅️ Back",
             "❤️ Favorite", "🔔 Notify Me", "📤 Share",
+            "❌ Cancel",
         })
 
     def test_quick_edit_menu_has_required_actions(self):
@@ -702,6 +710,7 @@ class AdminWizardTests(unittest.TestCase):
             "admin:quick_status:42",
             "admin:photo_manager:42",
             "admin:stock:42",
+            "global:cancel",
         })
 
     def test_photo_manager_has_all_required_actions(self):
@@ -716,6 +725,7 @@ class AdminWizardTests(unittest.TestCase):
             "admin:photo_multi:9",
             "admin:photo_delete_all:9",
             "admin:stock:9",
+            "global:cancel",
         })
 
     def test_unlimited_photo_file_ids_are_persisted_without_duplicates(self):
@@ -850,7 +860,7 @@ class AdminWizardTests(unittest.TestCase):
         }
         self.assertEqual(
             callbacks,
-            {"admin:stats", "admin:stats_export", "admin:home"},
+            {"admin:stats", "admin:stats_export", "admin:home", "global:cancel"},
         )
 
     def test_backup_create_extract_restore_history_and_delete(self):
@@ -942,6 +952,7 @@ class AdminWizardTests(unittest.TestCase):
             "admin:backup_logs",
             "admin:backup_auto",
             "admin:home",
+            "global:cancel",
         })
 
     def test_backup_exports_import_logs_and_invalid_restore(self):
@@ -1023,6 +1034,7 @@ class AdminWizardTests(unittest.TestCase):
                     "admin:settings_menu",
                     "admin:settings_theme",
                     "admin:home",
+                    "global:cancel",
                 })
             finally:
                 db.DB_PATH = old_path
@@ -1385,6 +1397,7 @@ class AdminWizardTests(unittest.TestCase):
             "admin:order_manager_filters",
             "admin:order_manager_history",
             "admin:home",
+            "global:cancel",
         })
         status_callbacks = {
             button.callback_data
@@ -1761,6 +1774,48 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     message.reply_text.await_args.args[0],
                     "❌ Add Stock cancelled.",
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_submenu_back_and_global_cancel_clear_temporary_state(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "global-navigation.db")
+            try:
+                db.init_db()
+                callbacks = {
+                    button.callback_data
+                    for row in settings.settings_menu().inline_keyboard
+                    for button in row
+                }
+                self.assertIn("admin:home", callbacks)
+                self.assertIn("global:cancel", callbacks)
+
+                context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "settings_welcome",
+                        "settings_draft": "temporary",
+                    },
+                    chat_data={"workflow_state": "editing"},
+                )
+                query = SimpleNamespace(
+                    data="global:cancel",
+                    from_user=SimpleNamespace(id=619658883),
+                    answer=AsyncMock(),
+                    edit_message_text=AsyncMock(),
+                    message=SimpleNamespace(reply_text=AsyncMock()),
+                )
+                result = await handle_callback(
+                    SimpleNamespace(callback_query=query), context
+                )
+
+                self.assertEqual(result, -1)
+                self.assertEqual(context.user_data, {})
+                self.assertEqual(context.chat_data, {})
+                self.assertEqual(
+                    query.edit_message_text.await_args.args[0],
+                    "❌ Cancelled.",
                 )
             finally:
                 db.DB_PATH = old_path

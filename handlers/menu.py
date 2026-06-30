@@ -600,6 +600,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     clear_photo_upload_session(uid)
     _clear_wizard_state(context)
+    chat_data = getattr(context, "chat_data", None)
+    if chat_data is not None:
+        chat_data.clear()
     user = update.effective_user
     upsert_customer_profile(
         uid,
@@ -637,6 +640,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     clear_photo_upload_session(user_id)
     _clear_wizard_state(context)
+    chat_data = getattr(context, "chat_data", None)
+    if chat_data is not None:
+        chat_data.clear()
     if is_admin(user_id):
         if remove_wizard_keyboard:
             await update.message.reply_text(
@@ -649,7 +655,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         await update.message.reply_text(
-            "❌ Add Stock cancelled." if was_add_stock else "✅ Action cancelled.",
+            "❌ Add Stock cancelled." if was_add_stock else "❌ Cancelled.",
             reply_markup=admin_home(),
         )
     else:
@@ -662,6 +668,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     uid = query.from_user.id
     language = get_user_language(uid)
+
+    if data == "global:cancel":
+        clear_photo_upload_session(uid)
+        context.user_data.clear()
+        chat_data = getattr(context, "chat_data", None)
+        if chat_data is not None:
+            chat_data.clear()
+        await query.answer()
+        await query.edit_message_text(
+            "❌ Cancelled.",
+            reply_markup=(
+                admin_home()
+                if is_admin(uid)
+                else main_menu(False, language)
+            ),
+        )
+        return ConversationHandler.END
 
     # Never allow a non-admin to open an admin action, including through an
     # old Telegram message whose inline keyboard is still visible.
@@ -1507,6 +1530,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     language = get_user_language(user_id)
     text = (getattr(update.message, "text", None) or "").strip()
+
+    if text == "❌ Cancel" and context.user_data.get("admin_mode") != "create":
+        return await cancel(update, context)
 
     if context.user_data.get("admin_mode") == "create" and text == "❌ Cancel":
         clear_photo_upload_session(user_id)
