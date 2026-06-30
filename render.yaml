@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: stock-page-bot-pro
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.0
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: TELEGRAM_CONTACT
+        sync: false
+      - key: FACEBOOK_CONTACT
+        sync: false
+      - key: DB_PATH
+        value: /var/data/database.db
+    disk:
+      name: stock-page-data
+      mountPath: /var/data
+      sizeGB: 1

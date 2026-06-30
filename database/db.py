@@ -2,7 +2,7 @@ import sqlite3
 import re
 import json
 from datetime import datetime
-from config import DB_PATH
+from config import ADMIN_IDS, DB_PATH
 
 
 DEFAULT_MENU_ITEMS = (
@@ -17,6 +17,14 @@ DEFAULT_MENU_ITEMS = (
     ("language", "🌐", "Language", "Language", "language:choose", 1, 80),
 )
 
+_SETTING_CACHE = {}
+_ADMIN_CACHE = {}
+
+
+def clear_runtime_caches():
+    _SETTING_CACHE.clear()
+    _ADMIN_CACHE.clear()
+
 
 def connect():
     con = sqlite3.connect(DB_PATH, timeout=10)
@@ -26,6 +34,7 @@ def connect():
 
 
 def init_db():
+    clear_runtime_caches()
     con = connect()
     cur = con.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
@@ -105,9 +114,10 @@ def init_db():
         added_at TEXT DEFAULT ''
     )
     """)
-    cur.execute(
+    admin_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.executemany(
         "INSERT OR IGNORE INTO admins (user_id, added_at) VALUES (?, ?)",
-        (619658883, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        [(admin_id, admin_time) for admin_id in {619658883, *ADMIN_IDS}],
     )
 
     cur.execute("""
@@ -437,6 +447,12 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_stocks_promotion ON stocks(promotion)"
     )
     cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_stocks_category ON stocks(category)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_stocks_created ON stocks(created_at DESC, id DESC)"
+    )
+    cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_stock_photos_stock ON stock_photos(stock_id, id)"
     )
     cur.execute(
@@ -444,6 +460,10 @@ def init_db():
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, order_id DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_status_created "
+        "ON orders(status, created_at DESC, order_id DESC)"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_orders_created "
@@ -476,6 +496,22 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_customer_profiles_facebook "
         "ON customer_profiles(facebook_profile_link)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_profiles_phone "
+        "ON customer_profiles(phone)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_profiles_activity "
+        "ON customer_profiles(updated_at DESC, telegram_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_profiles_value "
+        "ON customer_profiles(total_spent DESC, total_orders DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_customer_profiles_vip "
+        "ON customer_profiles(is_vip, updated_at DESC)"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_broadcasts_schedule "
@@ -520,6 +556,51 @@ def init_db():
 
     con.commit()
     con.close()
+
+
+def verify_database():
+    required_tables = {
+        "admins", "app_settings", "audit_logs", "backup_logs",
+        "broadcast_recipients", "broadcasts", "customer_profiles",
+        "favorites", "maintenance_runs", "menu_items",
+        "notification_subscribers", "order_receipts",
+        "order_status_history", "orders", "payment_logs",
+        "pending_stock_notifications", "photo_upload_sessions",
+        "recent_searches", "saved_filters", "scheduled_jobs",
+        "stock_analytics", "stock_photos", "stocks", "user_preferences",
+    }
+    required_indexes = {
+        "idx_stocks_status", "idx_orders_customer", "idx_orders_status_created",
+        "idx_customer_profiles_activity", "idx_scheduled_jobs_due",
+        "idx_audit_logs_created",
+    }
+    con = connect()
+    try:
+        integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
+        foreign_key_errors = con.execute("PRAGMA foreign_key_check").fetchall()
+        tables = {
+            row[0] for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        indexes = {
+            row[0] for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+    missing_tables = sorted(required_tables - tables)
+    missing_indexes = sorted(required_indexes - indexes)
+    report = {
+        "integrity": integrity,
+        "foreign_key_errors": foreign_key_errors,
+        "missing_tables": missing_tables,
+        "missing_indexes": missing_indexes,
+    }
+    if integrity != "ok" or foreign_key_errors or missing_tables or missing_indexes:
+        raise RuntimeError(f"Database verification failed: {report}")
+    return report
 
 
 def add_audit_log(admin_id, admin_name, action, target="", details=""):
@@ -1180,11 +1261,16 @@ def set_user_language(user_id, language):
 
 
 def get_setting(key, default=""):
+    cache_key = (DB_PATH, str(key))
+    if cache_key in _SETTING_CACHE:
+        value = _SETTING_CACHE[cache_key]
+        return default if value is None else value
     con = connect()
     cur = con.cursor()
     cur.execute("SELECT value FROM app_settings WHERE key=?", (key,))
     row = cur.fetchone()
     con.close()
+    _SETTING_CACHE[cache_key] = row[0] if row else None
     return row[0] if row else default
 
 
@@ -1198,6 +1284,7 @@ def set_setting(key, value):
     """, (key, str(value)))
     con.commit()
     con.close()
+    _SETTING_CACHE[(DB_PATH, str(key))] = str(value)
 
 
 def get_all_settings():
@@ -1206,6 +1293,8 @@ def get_all_settings():
     cur.execute("SELECT key, value FROM app_settings ORDER BY key")
     settings = dict(cur.fetchall())
     con.close()
+    for key, value in settings.items():
+        _SETTING_CACHE[(DB_PATH, key)] = value
     return settings
 
 
@@ -1237,11 +1326,15 @@ def get_backup_logs(limit=50):
 
 
 def is_admin_user(user_id):
+    cache_key = (DB_PATH, int(user_id))
+    if cache_key in _ADMIN_CACHE:
+        return _ADMIN_CACHE[cache_key]
     con = connect()
     cur = con.cursor()
     cur.execute("SELECT 1 FROM admins WHERE user_id=?", (int(user_id),))
     exists = cur.fetchone() is not None
     con.close()
+    _ADMIN_CACHE[cache_key] = exists
     return exists
 
 
@@ -1264,6 +1357,7 @@ def add_admin(user_id):
     added = cur.rowcount > 0
     con.commit()
     con.close()
+    _ADMIN_CACHE[(DB_PATH, int(user_id))] = True
     return added
 
 
@@ -1277,6 +1371,7 @@ def remove_admin(user_id):
     removed = cur.rowcount > 0
     con.commit()
     con.close()
+    _ADMIN_CACHE[(DB_PATH, user_id)] = False
     return removed
 
 

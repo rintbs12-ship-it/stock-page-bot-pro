@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime
 from time import perf_counter
 
@@ -6,6 +7,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden, TelegramError
 
 from database.db import (
+    add_maintenance_run,
     complete_broadcast,
     create_broadcast,
     get_broadcast,
@@ -17,6 +19,9 @@ from database.db import (
     mark_broadcast_sending,
     search_customers,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def notification_center_menu():
@@ -371,5 +376,12 @@ async def process_due_broadcasts(bot, now=None):
 
 async def notification_scheduler(bot, interval=30):
     while True:
-        await process_due_broadcasts(bot)
+        try:
+            await process_due_broadcasts(bot)
+        except Exception as exc:
+            LOGGER.exception("Scheduled broadcast cycle failed")
+            try:
+                add_maintenance_run("broadcast_scheduler", "failed", str(exc)[:500])
+            except Exception:
+                LOGGER.exception("Could not persist broadcast scheduler failure")
         await asyncio.sleep(interval)

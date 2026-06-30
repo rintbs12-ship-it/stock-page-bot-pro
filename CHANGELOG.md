@@ -1,24 +1,42 @@
 # Changelog
 
-## Stock Page Bot Pro 1.0 — 2026-06-30
+## Stock Page Bot Pro 1.0 Stable — 2026-06-30
 
-Production release containing all completed modules:
+Final production release covering Modules 1–22.
 
-1. Professional Admin Panel with owner-only security.
-2. Guided Add Stock wizard with validated stock attributes.
-3. Unlimited Telegram `file_id` photo uploads and `/done` completion.
-4. Stock management, Quick Edit, status, Featured, and Promotion controls.
-5. Photo Manager with navigation and single, multiple, or confirmed bulk deletion.
-6. Professional Statistics Dashboard with TXT report export.
-7. Backup and Restore Pro with history and automatic schedules.
-8. Settings Pro for profile, logo, contacts, defaults, admins, and announcements.
-9. Khmer/English customer experience, favorites, notifications, search, filters,
-   sharing, analytics, and trending stock.
-10. Production hardening: SQLite indexes/WAL, validation, cancellation, logging,
-    friendly errors, documentation, and release verification.
-11. Order and payment receipt workflow with Bakong QR, guarded customer/admin
-    transitions, Facebook information collection, order history, and automatic
-    stock completion.
+### Core platform
 
-No customer or stock data is removed during upgrade. Database migrations run
-automatically and preserve existing SQLite records.
+- Professional admin panel with database-backed permissions
+- Guided stock creation, editing, flags, promotions, and photo management
+- Khmer/English customer catalog, favorites, notifications, and sharing
+- Order, payment receipt, Facebook transfer, and status-history workflows
+- Customer CRM, VIP/ban controls, private notes, and targeted broadcasts
+
+### Administration and insight
+
+- Statistics and analytics dashboards with exports
+- Backup, validated restore, history, retention, and automatic schedules
+- Store settings, Menu Editor, Theme Editor, payment QR, and announcements
+- Admin audit logs with filters, search, pagination, and CSV export
+- Global and advanced stock/customer/order search with smart and saved filters
+
+### Automation
+
+- Persistent scheduled announcements and reminders
+- Daily, weekly, and monthly recurring jobs restored after restart
+- Automatic backup and cleanup
+- Daily optimize, vacuum, analytics refresh, and database health checks
+
+### Final production hardening
+
+- Added safe runtime caches for repeated settings and permission lookups
+- Added workload indexes for search, order, customer, and scheduler queries
+- Added startup integrity, foreign-key, schema, migration, and index validation
+- Hardened update and background-task error boundaries with admin diagnostics
+- Removed the tracked environment-secret file and added safe deployment samples
+- Added Render Blueprint configuration with persistent SQLite storage
+- Updated installation, deployment, backup, editor, scheduler, CRM, analytics,
+  and Order Manager documentation
+
+All migrations are idempotent and preserve existing customer, stock, order,
+settings, audit, scheduler, and backup data.

@@ -1,9 +1,16 @@
 import asyncio
 import logging
+from datetime import datetime
 
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from config import BOT_TOKEN
-from database.db import init_db, add_demo_stock_if_empty
+from database.db import (
+    add_demo_stock_if_empty,
+    add_maintenance_run,
+    init_db,
+    list_admins,
+    verify_database,
+)
 from handlers.backup import run_due_auto_backup
 from handlers.notifications import notification_scheduler
 from handlers.scheduler import task_scheduler
@@ -16,8 +23,18 @@ LOGGER = logging.getLogger(__name__)
 
 
 async def handle_error(update, context):
-    LOGGER.exception("Unhandled bot error", exc_info=context.error)
-    message = "⚠️ Something went wrong. Please try again from /start."
+    error = context.error
+    reference = datetime.now().strftime("%Y%m%d%H%M%S")
+    LOGGER.exception("Unhandled bot error [%s]", reference, exc_info=error)
+    details = f"{type(error).__name__}: {str(error)[:500]}"
+    try:
+        add_maintenance_run("unhandled_error", "failed", f"{reference}: {details}")
+    except Exception:
+        LOGGER.exception("Could not persist error [%s]", reference)
+    message = (
+        "⚠️ Something went wrong. Please try again from /start.\n"
+        f"Reference: {reference}"
+    )
     try:
         if update and getattr(update, "callback_query", None):
             await update.callback_query.message.reply_text(message)
@@ -25,6 +42,19 @@ async def handle_error(update, context):
             await update.effective_message.reply_text(message)
     except Exception:
         LOGGER.exception("Could not send friendly error message")
+    try:
+        admins = list_admins()
+    except Exception:
+        LOGGER.exception("Could not load admins for error %s", reference)
+        admins = []
+    for admin_id, _ in admins:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=f"🚨 Bot error [{reference}]\n{details}",
+            )
+        except Exception:
+            LOGGER.warning("Could not notify admin %s of error %s", admin_id, reference)
 
 
 def build_application():
@@ -45,7 +75,7 @@ def build_application():
 async def run_bot(app):
     health_server = await start_health_server()
     health_port = health_server.sockets[0].getsockname()[1]
-    print(f"Health server listening on 0.0.0.0:{health_port}")
+    LOGGER.info("Health server listening on 0.0.0.0:%s", health_port)
     try:
         async with app:
             await app.updater.start_polling(allowed_updates=None)
@@ -54,7 +84,7 @@ async def run_bot(app):
                 notification_scheduler(app.bot)
             )
             scheduler_task = asyncio.create_task(task_scheduler(app.bot))
-            print(f"{PRODUCT_NAME} v{__version__} is running...")
+            LOGGER.info("%s v%s is running", PRODUCT_NAME, __version__)
             try:
                 await asyncio.Event().wait()
             finally:
@@ -86,20 +116,23 @@ def main():
         level=logging.INFO,
     )
     init_db()
+    report = verify_database()
+    LOGGER.info(
+        "Database verified: integrity=%s, foreign_key_errors=%d",
+        report["integrity"], len(report["foreign_key_errors"]),
+    )
     add_demo_stock_if_empty()
     try:
         automatic_backup = run_due_auto_backup()
         if automatic_backup:
-            print(f"Auto backup created: {automatic_backup.name}")
+            LOGGER.info("Auto backup created: %s", automatic_backup.name)
     except (OSError, RuntimeError) as exc:
-        # A backup filesystem problem must not prevent customer features
-        # from starting. The Admin can retry from Backup Manager.
-        print(f"Auto backup skipped: {exc}")
+        LOGGER.warning("Auto backup skipped: %s", exc)
     app = build_application()
     try:
         asyncio.run(run_bot(app))
     except KeyboardInterrupt:
-        print("Stock Page Bot stopped.")
+        LOGGER.info("Stock Page Bot stopped")
 
 
 if __name__ == "__main__":

@@ -22,9 +22,14 @@ async def _handle_health_request(reader, writer):
         ).encode("ascii") + body
         writer.write(response)
         await writer.drain()
+    except (asyncio.TimeoutError, ConnectionError):
+        pass
     finally:
         writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.wait_closed()
+        except ConnectionError:
+            pass
 
 
 async def start_health_server(host="0.0.0.0", port=None):

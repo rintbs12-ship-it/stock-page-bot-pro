@@ -1,6 +1,7 @@
 import asyncio
 import calendar
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,6 +40,7 @@ REMINDER_TYPES = {
     "customer_followup": "Customer Follow-up Reminder",
 }
 RECURRENCES = {"one_time", "daily", "weekly", "monthly"}
+LOGGER = logging.getLogger(__name__)
 
 
 def scheduler_menu():
@@ -322,8 +324,12 @@ async def task_scheduler(bot, interval=60):
             run_due_auto_backup()
             await process_due_jobs(bot)
             run_daily_maintenance()
-        except (OSError, RuntimeError, sqlite3.DatabaseError) as exc:
-            add_maintenance_run("scheduler", "failed", str(exc))
+        except Exception as exc:
+            LOGGER.exception("Task scheduler cycle failed")
+            try:
+                add_maintenance_run("scheduler", "failed", str(exc)[:500])
+            except Exception:
+                LOGGER.exception("Could not persist task scheduler failure")
         await asyncio.sleep(interval)
 
 

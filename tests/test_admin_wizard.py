@@ -149,7 +149,7 @@ class AdminWizardTests(unittest.TestCase):
 
     def test_production_release_version(self):
         self.assertEqual(PRODUCT_NAME, "Stock Page Bot Pro")
-        self.assertEqual(__version__, "1.0")
+        self.assertEqual(__version__, "1.0 Stable")
 
     def test_analytics_dashboard_summary_and_revenue(self):
         old_path = db.DB_PATH
@@ -582,7 +582,21 @@ class AdminWizardTests(unittest.TestCase):
                     "female_percent", "male_percent", "quality_percent",
                     "real_followers", "organic_reach", "monetized",
                     "no_violation", "ready_transfer", "business_ready",
+                    "category",
                 }.issubset(columns))
+                report = db.verify_database()
+                self.assertEqual(report["integrity"], "ok")
+                self.assertEqual(report["foreign_key_errors"], [])
+                self.assertEqual(report["missing_tables"], [])
+                self.assertEqual(report["missing_indexes"], [])
+                self.assertEqual(db.get_setting("cache_test", "missing"), "missing")
+                db.set_setting("cache_test", "ready")
+                self.assertEqual(db.get_setting("cache_test"), "ready")
+                self.assertFalse(db.is_admin_user(987654321))
+                self.assertTrue(db.add_admin(987654321))
+                self.assertTrue(db.is_admin_user(987654321))
+                self.assertTrue(db.remove_admin(987654321))
+                self.assertFalse(db.is_admin_user(987654321))
                 self.assertEqual(db.get_user_language(100), "km")
                 self.assertTrue(db.set_user_language(100, "en"))
                 self.assertEqual(db.get_user_language(100), "en")

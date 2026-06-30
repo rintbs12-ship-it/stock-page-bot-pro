@@ -1,112 +1,163 @@
 # Stock Page Bot Pro
 
-Version 1.0 — production Telegram stock-page catalog and administration bot.
+Version 1.0 Stable — production Telegram stock catalog, order management, CRM,
+analytics, automation, and administration bot.
 
 ## Requirements
 
 - Python 3.14
-- `python-telegram-bot==22.3`
 - SQLite 3
-- A Telegram bot token from BotFather
+- Telegram bot token from BotFather
+- `python-telegram-bot==22.3`
 
-## Installation
-
-Open PowerShell in the project folder:
+## Local installation
 
 ```powershell
-cd E:\RS_StockBot_Pro
-python -m pip install -r StockPageBot_Part1\StockPageBot_Part1\requirements.txt
+cd E:\RS_StockBot_Pro\StockPageBot_Part1\StockPageBot_Part1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-Configure `StockPageBot_Part1\StockPageBot_Part1\.env`:
-
-```env
-BOT_TOKEN=YOUR_BOT_TOKEN
-ADMIN_IDS=619658883
-TELEGRAM_CONTACT=https://t.me/your_username
-FACEBOOK_CONTACT=https://facebook.com/your_page
-```
-
-The owner account is Telegram user ID `619658883`. Additional admins are
-managed from Settings and stored in SQLite.
-
-## Running the bot
-
-From the repository root:
+Edit `.env`, then start the application:
 
 ```powershell
 python bot.py
 ```
 
-Stop the bot with `Ctrl+C`. After code updates, stop and run it again.
+The bot initializes and migrates SQLite automatically, verifies database
+integrity and foreign keys, starts its health server, restores persistent jobs,
+and begins Telegram polling.
 
-## Customer guide
+## Environment variables
 
-- Use `/start` to open the main menu.
-- Switch between Khmer and English with `🌐 Language / ភាសា`.
-- Browse Menu 1–6, New Stock, Featured, Promotion, and Available stock.
-- Search by followers or use Advanced Search for country, price, quality,
-  and status.
-- Open stock details to view photos, contact the store, buy, share, save a
-  favorite, or subscribe to new-stock notifications.
-- Use Favorites and Trending from the main menu.
-- Use `Buy` to create an order, upload a payment receipt, submit Facebook
-  information, and follow progress from `My Orders`.
+| Variable | Required | Description |
+| --- | --- | --- |
+| `BOT_TOKEN` | Yes | Secret token issued by BotFather |
+| `ADMIN_IDS` | Yes | Comma-separated bootstrap admin Telegram IDs |
+| `TELEGRAM_CONTACT` | No | Public Telegram contact URL |
+| `FACEBOOK_CONTACT` | No | Public Facebook page URL |
+| `DB_PATH` | No | SQLite path; defaults to `database.db` |
+| `IMAGE_DIR` | No | Optional local image directory |
+| `PORT` | On Render | Health server port; defaults to `10000` |
 
-## Admin guide
+Never commit `.env` or a real bot token. Configure secrets in the hosting
+provider. If a token has ever appeared in Git history, revoke and regenerate it
+with BotFather before deployment.
 
-The Admin Panel is hidden from customers. Admin functions include:
+## Render deployment
 
-- Add Stock wizard and unlimited photo upload (`/done` to finish)
-- Manage Stock and Quick Edit
-- Photo Manager
-- Featured and Promotion controls
-- Statistics and customer analytics
-- Backup and Restore
-- Store Settings and Admin Manager
-- Payment receipt confirmation and complete order processing
+The included `render.yaml` creates a Python web service with a persistent disk.
 
-Configure the Bakong QR from `Admin Panel → Settings → Payment QR`. Manage
-waiting, processing, completed, and cancelled orders from `Admin Panel → Orders`.
+1. Push the repository to a private Git provider.
+2. In Render, create a Blueprint from `render.yaml`.
+3. Set `BOT_TOKEN`, `ADMIN_IDS`, `TELEGRAM_CONTACT`, and `FACEBOOK_CONTACT`.
+4. Keep `DB_PATH=/var/data/database.db`.
+5. Deploy and confirm the `/` health check returns `OK`.
 
-Use `/cancel` to safely leave an active admin wizard or edit operation.
+A persistent disk is required. Without it, SQLite data and local backups are
+lost during redeployment. Run only one polling instance against a bot token.
 
-## Backup
+## Customer workflow
 
-Open `Admin Panel → 💾 Backup`.
+Customers can browse and filter stock, search by followers, open localized
+Khmer/English stock cards, save favorites, subscribe to notifications, place an
+order, upload payment receipts, submit Facebook transfer details, and monitor
+order history. Customer callbacks never expose admin actions.
 
-- `Create Backup` generates `backup_YYYYMMDD_HHMMSS.zip`.
-- Each ZIP contains `database.db`, `settings.json`, and `backup_info.json`.
-- `Export Database` sends a consistent raw SQLite snapshot.
-- Backup History lists the latest 10 local backups.
-- Auto Backup supports Off, Daily, Weekly, and Monthly schedules.
+## Admin Panel
 
-Local ZIP files are stored in the `backups` directory beside the database.
+The Admin Panel is protected by a database-backed permission check. It includes
+stock creation and editing, photo management, orders, customers, analytics,
+notifications, settings, audit logs, advanced search, scheduler controls,
+backup/restore, and maintenance.
 
-## Restore
+Use `/cancel` to leave an active wizard safely.
 
-1. Open `Admin Panel → 💾 Backup → Restore Database`.
-2. Upload `database.db` or a backup ZIP.
-3. Confirm the restore.
+### Order Manager
 
-The bot validates SQLite integrity and required tables before confirmation.
-It also creates a safety backup of the current database before replacement.
-Existing data is never overwritten without explicit confirmation.
+Order Manager handles waiting, paid, processing, completed, and cancelled
+orders. Payment approval is guarded against duplicate transitions. Receipt
+history, customer notifications, timestamps, status history, and automatic
+stock completion are persisted.
 
-## Database and upgrades
+### CRM
 
-The bot runs safe, idempotent migrations at startup. Existing stock and photo
-records are preserved. SQLite uses WAL mode, foreign-key checks, busy timeouts,
-and indexes for production reads.
+The Customers section supports customer lookup, profiles, order history, VIP
+and ban controls, private notes, spending totals, and targeted communications.
 
-## Testing
+### Analytics
+
+Statistics and Analytics Dashboard report stock activity, order conversion,
+revenue, payment results, customer rankings, and trends. Reports can be
+filtered and exported.
+
+### Menu Editor
+
+Open `Admin Panel → Settings → Menu Editor`. The owner can edit button text and
+emoji, enable or disable customer menu items, reorder entries, and restore
+defaults. Changes are stored in SQLite and apply immediately.
+
+### Theme Editor
+
+Open `Admin Panel → Settings → Theme Editor` to configure the welcome emoji,
+store title, welcome and footer text, menu style, separators, message icons,
+and stock-card template. Template placeholders are validated before saving.
+
+### Scheduler
+
+Scheduler & Auto Tasks restores active jobs from SQLite after every restart.
+It supports:
+
+- Daily, weekly, and monthly backups with retention cleanup
+- One-time, daily, weekly, and monthly announcements
+- Pending-payment, pending-order, follow-up, and custom reminders
+- Log, temporary-file, and old-backup cleanup
+- Daily optimize, vacuum, analytics refresh, and health checks
+
+### Audit logs and search
+
+Audit Logs records sensitive admin actions with admin, target, details, and
+timestamp. Logs support filtering, search, pagination, and CSV export.
+Advanced Search covers stock, customers, orders, smart filters, saved filters,
+recent searches, pagination, and CSV export.
+
+## Backup and restore
+
+Open `Admin Panel → Backup Manager`.
+
+- Create Backup writes `backup_YYYYMMDD_HHMMSS.zip`.
+- ZIP files contain `database.db`, `settings.json`, and `backup_info.json`.
+- Export Database creates a consistent SQLite snapshot.
+- Auto Backup supports Off, Daily, Weekly, and Monthly.
+- Retention keeps the configured latest N backups and removes older archives.
+
+To restore, select a local backup or upload `database.db`/a backup ZIP, review
+the confirmation, and approve. The bot validates SQLite before replacement and
+creates a safety backup first. Migrations and runtime caches are refreshed after
+restore.
+
+## Production behavior
+
+- SQLite uses WAL, foreign keys, busy timeout, parameterized queries, and
+  workload indexes.
+- Startup runs idempotent migrations plus integrity, schema, index, and foreign
+  key verification.
+- Unexpected update errors receive a reference number, are logged in detail,
+  persisted to maintenance history when possible, and reported to admins.
+- Background schedulers isolate failures and continue running.
+- The health server binds to `0.0.0.0:$PORT`.
+
+## Validation
 
 From the application directory:
 
 ```powershell
-cd E:\RS_StockBot_Pro\StockPageBot_Part1\StockPageBot_Part1
-python -m py_compile bot.py handlers\*.py keyboards\*.py database\*.py
+python -c "import bot, database.db, handlers.menu, handlers.scheduler"
 python -m unittest discover -s tests -v
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for release history.
+For syntax validation:
+
+```powershell
+python -m compileall -q bot.py database handlers keyboards tests
+```
