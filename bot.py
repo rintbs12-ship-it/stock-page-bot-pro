@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from config import BOT_TOKEN
 from database.db import init_db, add_demo_stock_if_empty
 from handlers.backup import run_due_auto_backup
+from health import start_health_server
 from handlers.menu import cancel, start, handle_callback, handle_text, handle_command
 from version import PRODUCT_NAME, __version__
 
@@ -39,17 +40,24 @@ def build_application():
 
 
 async def run_bot(app):
-    async with app:
-        await app.updater.start_polling(allowed_updates=None)
-        await app.start()
-        print(f"{PRODUCT_NAME} v{__version__} is running...")
-        try:
-            await asyncio.Event().wait()
-        finally:
-            if app.updater.running:
-                await app.updater.stop()
-            if app.running:
-                await app.stop()
+    health_server = await start_health_server()
+    health_port = health_server.sockets[0].getsockname()[1]
+    print(f"Health server listening on 0.0.0.0:{health_port}")
+    try:
+        async with app:
+            await app.updater.start_polling(allowed_updates=None)
+            await app.start()
+            print(f"{PRODUCT_NAME} v{__version__} is running...")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                if app.updater.running:
+                    await app.updater.stop()
+                if app.running:
+                    await app.stop()
+    finally:
+        health_server.close()
+        await health_server.wait_closed()
 
 
 def main():

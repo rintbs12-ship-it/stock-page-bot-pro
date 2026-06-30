@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 import zipfile
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ from keyboards.buttons import (
     stock_detail,
 )
 from version import PRODUCT_NAME, __version__
+from health import start_health_server
 
 
 class AdminWizardTests(unittest.TestCase):
@@ -547,6 +549,30 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_health_server_returns_ok_and_404(self):
+        server = await start_health_server(host="127.0.0.1", port=0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            await writer.drain()
+            response = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            self.assertIn(b"HTTP/1.1 200 OK", response)
+            self.assertTrue(response.endswith(b"OK"))
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET /missing HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            await writer.drain()
+            response = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            self.assertIn(b"HTTP/1.1 404 Not Found", response)
+        finally:
+            server.close()
+            await server.wait_closed()
+
     async def test_quick_edit_followers_updates_sqlite_and_returns_detail(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:
