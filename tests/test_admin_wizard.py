@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 from database import db
 from handlers import backup
 from handlers import settings
+from handlers.orders import start_order
 from handlers.menu import (
     begin_photo_upload,
     build_stock_report,
@@ -63,7 +64,7 @@ class AdminWizardTests(unittest.TestCase):
         self.assertFalse(any(value and value.startswith("admin:") for value in callbacks))
         self.assertEqual(
             [len(row) for row in menu.inline_keyboard],
-            [2, 2, 2, 2, 2, 2, 2, 2, 1],
+            [2, 2, 2, 2, 2, 2, 2, 2, 1, 1],
         )
         self.assertTrue({
             "range:1:5", "range:6:10", "range:11:20", "range:21:30",
@@ -72,6 +73,7 @@ class AdminWizardTests(unittest.TestCase):
             "language:choose",
             "advanced:home", "favorites:list", "trending:list",
             "filters:home", "notify:toggle",
+            "orders:mine",
         }.issubset(set(callbacks)))
 
     def test_admin_panel_has_all_required_actions(self):
@@ -90,6 +92,7 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:list:promotion",
                 "admin:stats",
                 "admin:analytics",
+                "admin:orders",
                 "admin:settings",
                 "admin:backup",
                 "home",
@@ -464,6 +467,7 @@ class AdminWizardTests(unittest.TestCase):
                 }
                 self.assertEqual(callbacks, {
                     "admin:settings_profile", "admin:settings_logo",
+                    "admin:settings_payment_qr",
                     "admin:settings_welcome", "admin:settings_contact",
                     "admin:settings_language", "admin:settings_currency",
                     "admin:settings_country", "admin:settings_quality",
@@ -547,8 +551,106 @@ class AdminWizardTests(unittest.TestCase):
             finally:
                 db.DB_PATH = old_path
 
+    def test_order_lifecycle_enforces_owner_and_status_transitions(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "orders.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    15, "Cambodia", "", "$50", "95%", "", "https://fb/page",
+                    "available", quality_percent=95,
+                )
+                order_id = db.create_order(stock_id, 700, "buyer", "$50")
+                self.assertEqual(db.get_order(order_id)[5], "waiting_payment")
+                self.assertFalse(db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, customer_id=701
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, customer_id=700
+                ))
+                self.assertTrue(db.update_order_field(
+                    order_id, "receipt_file_id", "receipt-file",
+                    "waiting_receipt", customer_id=700,
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_admin_confirm", {"waiting_receipt"}, customer_id=700
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "payment_confirmed", {"waiting_admin_confirm"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_customer_info", {"payment_confirmed"}
+                ))
+                self.assertTrue(db.update_order_field(
+                    order_id, "facebook_profile_link", "https://facebook.com/buyer",
+                    "waiting_customer_info", customer_id=700,
+                ))
+                self.assertTrue(db.update_order_field(
+                    order_id, "requested_page_name", "My New Page",
+                    "waiting_customer_info", customer_id=700,
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "admin_processing", {"waiting_customer_info"}, customer_id=700
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "admin_added", {"admin_processing"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "customer_accepted", {"admin_added"}, customer_id=700
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "completed", {"customer_accepted"}
+                ))
+                db.update_stock_field(stock_id, "status", "sold")
+                order = db.get_order(order_id)
+                self.assertEqual(order[5], "completed")
+                self.assertEqual(order[6:9], (
+                    "https://facebook.com/buyer", "My New Page", "receipt-file"
+                ))
+                self.assertEqual(db.get_stock(stock_id)[8], "sold")
+                self.assertEqual(db.get_customer_orders(700)[0][0], order_id)
+                self.assertEqual(db.get_orders_by_group("completed")[0][0], order_id)
+                self.assertFalse(db.delete_stock(stock_id))
+            finally:
+                db.DB_PATH = old_path
+
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_buy_starts_order_and_shows_payment_screen(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "buy-order.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "available",
+                )
+                message = SimpleNamespace(
+                    reply_text=AsyncMock(),
+                    reply_photo=AsyncMock(),
+                )
+                query = SimpleNamespace(
+                    from_user=SimpleNamespace(id=900, username="buyer"),
+                    message=message,
+                )
+                context = SimpleNamespace(user_data={})
+                await start_order(query, context, stock_id)
+                orders = db.get_customer_orders(900)
+                self.assertEqual(len(orders), 1)
+                self.assertEqual(orders[0][5], "waiting_payment")
+                self.assertIn(
+                    f"Order #{orders[0][0]}",
+                    message.reply_text.await_args.args[0],
+                )
+                self.assertIn(
+                    "Payment QR is not configured",
+                    message.reply_text.await_args.args[0],
+                )
+            finally:
+                db.DB_PATH = old_path
+
     async def test_health_server_returns_ok_and_404(self):
         server = await start_health_server(host="127.0.0.1", port=0)
         port = server.sockets[0].getsockname()[1]

@@ -16,6 +16,9 @@ Production release containing all completed modules:
    sharing, analytics, and trending stock.
 10. Production hardening: SQLite indexes/WAL, validation, cancellation, logging,
     friendly errors, documentation, and release verification.
+11. Order and payment receipt workflow with Bakong QR, guarded customer/admin
+    transitions, Facebook information collection, order history, and automatic
+    stock completion.
 
 No customer or stock data is removed during upgrade. Database migrations run
 automatically and preserve existing SQLite records.

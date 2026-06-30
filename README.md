@@ -50,6 +50,8 @@ Stop the bot with `Ctrl+C`. After code updates, stop and run it again.
 - Open stock details to view photos, contact the store, buy, share, save a
   favorite, or subscribe to new-stock notifications.
 - Use Favorites and Trending from the main menu.
+- Use `Buy` to create an order, upload a payment receipt, submit Facebook
+  information, and follow progress from `My Orders`.
 
 ## Admin guide
 
@@ -62,6 +64,10 @@ The Admin Panel is hidden from customers. Admin functions include:
 - Statistics and customer analytics
 - Backup and Restore
 - Store Settings and Admin Manager
+- Payment receipt confirmation and complete order processing
+
+Configure the Bakong QR from `Admin Panel → Settings → Payment QR`. Manage
+waiting, processing, completed, and cancelled orders from `Admin Panel → Orders`.
 
 Use `/cancel` to safely leave an active admin wizard or edit operation.
 

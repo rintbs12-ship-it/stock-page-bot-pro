@@ -130,6 +130,23 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS orders (
+        order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stock_id INTEGER NOT NULL,
+        customer_id INTEGER NOT NULL,
+        customer_username TEXT DEFAULT '',
+        price TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'waiting_payment',
+        facebook_profile_link TEXT DEFAULT '',
+        requested_page_name TEXT DEFAULT '',
+        receipt_file_id TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        FOREIGN KEY(stock_id) REFERENCES stocks(id)
+    )
+    """)
+
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_stocks_followers ON stocks(followers)"
     )
@@ -147,6 +164,12 @@ def init_db():
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_stock_photos_stock ON stock_photos(stock_id, id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, order_id DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, order_id DESC)"
     )
 
     con.commit()
@@ -639,6 +662,161 @@ def get_trending_stocks(limit=10):
     return rows
 
 
+ORDER_STATUSES = {
+    "waiting_payment", "waiting_receipt", "waiting_admin_confirm",
+    "payment_confirmed", "waiting_customer_info", "admin_processing",
+    "admin_added", "customer_accepted", "completed", "cancelled",
+}
+
+
+def create_order(stock_id, customer_id, customer_username, price):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO orders (
+            stock_id, customer_id, customer_username, price, status,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'waiting_payment', ?, ?)
+    """, (stock_id, customer_id, customer_username or "", price, now, now))
+    order_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return order_id
+
+
+def get_order(order_id):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders WHERE order_id=?
+    """, (order_id,))
+    row = cur.fetchone()
+    con.close()
+    return row
+
+
+def transition_order(order_id, new_status, expected_statuses, customer_id=None):
+    if new_status not in ORDER_STATUSES:
+        return False
+    expected = tuple(expected_statuses)
+    if not expected or any(status not in ORDER_STATUSES for status in expected):
+        return False
+    placeholders = ",".join("?" for _ in expected)
+    params = [
+        new_status,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        order_id,
+        *expected,
+    ]
+    owner_clause = ""
+    if customer_id is not None:
+        owner_clause = " AND customer_id=?"
+        params.append(customer_id)
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        f"UPDATE orders SET status=?, updated_at=? "
+        f"WHERE order_id=? AND status IN ({placeholders}){owner_clause}",
+        params,
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def update_order_field(order_id, field, value, expected_status, customer_id=None):
+    allowed = {
+        "facebook_profile_link", "requested_page_name", "receipt_file_id",
+    }
+    if field not in allowed or expected_status not in ORDER_STATUSES:
+        return False
+    params = [
+        value,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        order_id,
+        expected_status,
+    ]
+    owner_clause = ""
+    if customer_id is not None:
+        owner_clause = " AND customer_id=?"
+        params.append(customer_id)
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        f"UPDATE orders SET {field}=?, updated_at=? "
+        f"WHERE order_id=? AND status=?{owner_clause}",
+        params,
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def get_customer_orders(customer_id, limit=20):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders WHERE customer_id=?
+        ORDER BY order_id DESC LIMIT ?
+    """, (customer_id, limit))
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
+def get_customer_action_order(customer_id):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders
+        WHERE customer_id=? AND status='waiting_customer_info'
+        ORDER BY order_id DESC LIMIT 1
+    """, (customer_id,))
+    row = cur.fetchone()
+    con.close()
+    return row
+
+
+def get_orders_by_group(group_name, limit=30):
+    groups = {
+        "waiting": ("waiting_admin_confirm",),
+        "processing": (
+            "payment_confirmed", "waiting_customer_info",
+            "admin_processing", "admin_added", "customer_accepted",
+        ),
+        "completed": ("completed",),
+        "cancelled": ("cancelled",),
+    }
+    statuses = groups.get(group_name)
+    if not statuses:
+        return []
+    placeholders = ",".join("?" for _ in statuses)
+    con = connect()
+    cur = con.cursor()
+    cur.execute(f"""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders WHERE status IN ({placeholders})
+        ORDER BY order_id DESC LIMIT ?
+    """, (*statuses, limit))
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
 def search_by_followers(k):
     con = connect()
     cur = con.cursor()
@@ -792,6 +970,10 @@ def toggle_stock_flag(stock_id, field):
 def delete_stock(stock_id):
     con = connect()
     cur = con.cursor()
+    cur.execute("SELECT 1 FROM orders WHERE stock_id=? LIMIT 1", (stock_id,))
+    if cur.fetchone():
+        con.close()
+        return False
     cur.execute("DELETE FROM favorites WHERE stock_id=?", (stock_id,))
     cur.execute("DELETE FROM stock_analytics WHERE stock_id=?", (stock_id,))
     cur.execute("DELETE FROM pending_stock_notifications WHERE stock_id=?", (stock_id,))

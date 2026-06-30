@@ -40,6 +40,7 @@ def main_menu(is_admin=False, language="km"):
          InlineKeyboardButton(trending_label, callback_data="trending:list")],
         [InlineKeyboardButton(filters_label, callback_data="filters:home"),
          InlineKeyboardButton(notify_label, callback_data="notify:toggle")],
+        [InlineKeyboardButton("📦 My Orders", callback_data="orders:mine")],
         [InlineKeyboardButton("🌐 Language / ភាសា", callback_data="language:choose")],
     ]
     if is_admin:
@@ -180,6 +181,7 @@ def admin_home():
         [InlineKeyboardButton("🔥 Promotion", callback_data="admin:list:promotion"),
          InlineKeyboardButton("📊 Statistics", callback_data="admin:stats")],
         [InlineKeyboardButton("📈 Customer Analytics", callback_data="admin:analytics")],
+        [InlineKeyboardButton("📋 Orders", callback_data="admin:orders")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="admin:settings"),
          InlineKeyboardButton("💾 Backup", callback_data="admin:backup")],
         [InlineKeyboardButton("⬅️ Back", callback_data="home")]

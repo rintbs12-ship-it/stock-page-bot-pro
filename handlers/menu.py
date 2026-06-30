@@ -14,6 +14,12 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from handlers.backup import handle_backup_callback, handle_restore_document
 from handlers.settings import handle_settings_callback, handle_settings_message
+from handlers.orders import (
+    handle_admin_order_callback,
+    handle_customer_order_callback,
+    handle_order_message,
+    start_order,
+)
 from keyboards.buttons import (
     admin_home,
     admin_edit_menu,
@@ -440,6 +446,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_backup_callback(query, context)
         return
 
+    if data.startswith("admin:order"):
+        await handle_admin_order_callback(query, context)
+        return
+
     if data.startswith("admin:settings"):
         await handle_settings_callback(query, context)
         return
@@ -466,6 +476,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_welcome_text(selected),
             reply_markup=main_menu(is_admin(uid), selected),
         )
+        return
+
+    if data == "orders:mine" or data.startswith("order:"):
+        await handle_customer_order_callback(query, context)
         return
 
     if data.startswith("range:"):
@@ -639,12 +653,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("buy:"):
         stock_id = int(data.split(":")[1])
         increment_stock_analytics(stock_id, "buy")
-        message = (
-            f"🛒 ទិញ Stock #{stock_id}\n\nសូមទាក់ទង Admin ខាងក្រោម៖"
-            if language == "km"
-            else f"🛒 Buy Stock #{stock_id}\n\nPlease contact Admin below:"
-        )
-        await query.message.reply_text(message, reply_markup=contact_menu(language))
+        await start_order(query, context, stock_id)
         return
 
     if data == "contact":
@@ -1199,6 +1208,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "Use Admin Panel → Backup → Restore Database first."
             )
+        return
+
+    if await handle_order_message(update, context):
         return
 
     if is_admin(user_id) and await handle_settings_message(update, context):

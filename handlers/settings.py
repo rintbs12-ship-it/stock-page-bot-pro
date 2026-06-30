@@ -18,6 +18,7 @@ def settings_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏪 Store Profile", callback_data="admin:settings_profile")],
         [InlineKeyboardButton("🖼 Bot Logo", callback_data="admin:settings_logo")],
+        [InlineKeyboardButton("💳 Payment QR", callback_data="admin:settings_payment_qr")],
         [InlineKeyboardButton("👋 Welcome Message", callback_data="admin:settings_welcome")],
         [InlineKeyboardButton("📞 Contact Information", callback_data="admin:settings_contact")],
         [InlineKeyboardButton("🌍 Language", callback_data="admin:settings_language")],
@@ -133,6 +134,16 @@ async def handle_settings_callback(query, context):
         context.user_data["admin_mode"] = "settings_logo"
         await query.edit_message_text(
             "🖼 Send one photo for the new Bot Logo.",
+            reply_markup=back_to_settings(),
+        )
+        return
+
+    if data == "admin:settings_payment_qr":
+        clear_photo_upload_session(user_id)
+        context.user_data.clear()
+        context.user_data["admin_mode"] = "settings_payment_qr"
+        await query.edit_message_text(
+            "💳 Send one Bakong QR photo.",
             reply_markup=back_to_settings(),
         )
         return
@@ -297,6 +308,18 @@ async def handle_settings_message(update, context):
         context.user_data.clear()
         await update.message.reply_text(
             "✅ Bot Logo updated.",
+            reply_markup=settings_menu(),
+        )
+        return True
+
+    if mode == "settings_payment_qr":
+        if not update.message.photo:
+            await update.message.reply_text("Please send one QR photo.")
+            return True
+        set_setting("payment_qr_file_id", update.message.photo[-1].file_id)
+        context.user_data.clear()
+        await update.message.reply_text(
+            "✅ Payment QR updated.",
             reply_markup=settings_menu(),
         )
         return True
