@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from config import BOT_TOKEN
 from database.db import (
@@ -20,6 +21,8 @@ from version import PRODUCT_NAME, __version__
 
 
 LOGGER = logging.getLogger(__name__)
+HEALTH_SERVER_KEY = "health_server"
+BACKGROUND_TASKS_KEY = "background_tasks"
 
 
 async def handle_error(update, context):
@@ -57,8 +60,59 @@ async def handle_error(update, context):
             LOGGER.warning("Could not notify admin %s of error %s", admin_id, reference)
 
 
+def _log_background_task_result(task):
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except Exception:
+        LOGGER.exception("Background task %s stopped unexpectedly", task.get_name())
+
+
+async def post_init(app):
+    health_server = await start_health_server()
+    app.bot_data[HEALTH_SERVER_KEY] = health_server
+    health_port = health_server.sockets[0].getsockname()[1]
+    LOGGER.info("Health server listening on 0.0.0.0:%s", health_port)
+
+    tasks = [
+        asyncio.create_task(
+            notification_scheduler(app.bot),
+            name="notification_scheduler",
+        ),
+        asyncio.create_task(
+            task_scheduler(app.bot),
+            name="task_scheduler",
+        ),
+    ]
+    for task in tasks:
+        task.add_done_callback(_log_background_task_result)
+    app.bot_data[BACKGROUND_TASKS_KEY] = tasks
+    LOGGER.info("%s v%s startup completed", PRODUCT_NAME, __version__)
+
+
+async def post_shutdown(app):
+    tasks = app.bot_data.pop(BACKGROUND_TASKS_KEY, [])
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    health_server = app.bot_data.pop(HEALTH_SERVER_KEY, None)
+    if health_server is not None:
+        health_server.close()
+        await health_server.wait_closed()
+    LOGGER.info("%s shutdown completed", PRODUCT_NAME)
+
+
 def build_application():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("done", handle_command))
     app.add_handler(CommandHandler("cancel", cancel))
@@ -70,41 +124,6 @@ def build_application():
     ))
     app.add_error_handler(handle_error)
     return app
-
-
-async def run_bot(app):
-    health_server = await start_health_server()
-    health_port = health_server.sockets[0].getsockname()[1]
-    LOGGER.info("Health server listening on 0.0.0.0:%s", health_port)
-    try:
-        async with app:
-            await app.updater.start_polling(allowed_updates=None)
-            await app.start()
-            notification_task = asyncio.create_task(
-                notification_scheduler(app.bot)
-            )
-            scheduler_task = asyncio.create_task(task_scheduler(app.bot))
-            LOGGER.info("%s v%s is running", PRODUCT_NAME, __version__)
-            try:
-                await asyncio.Event().wait()
-            finally:
-                notification_task.cancel()
-                scheduler_task.cancel()
-                try:
-                    await notification_task
-                except asyncio.CancelledError:
-                    pass
-                try:
-                    await scheduler_task
-                except asyncio.CancelledError:
-                    pass
-                if app.updater.running:
-                    await app.updater.stop()
-                if app.running:
-                    await app.stop()
-    finally:
-        health_server.close()
-        await health_server.wait_closed()
 
 
 def main():
@@ -130,9 +149,15 @@ def main():
         LOGGER.warning("Auto backup skipped: %s", exc)
     app = build_application()
     try:
-        asyncio.run(run_bot(app))
+        app.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            bootstrap_retries=-1,
+        )
     except KeyboardInterrupt:
         LOGGER.info("Stock Page Bot stopped")
+    except Exception:
+        LOGGER.exception("Fatal bot process error")
+        raise
 
 
 if __name__ == "__main__":
