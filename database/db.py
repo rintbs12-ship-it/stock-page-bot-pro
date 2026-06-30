@@ -3,6 +3,18 @@ from datetime import datetime
 from config import DB_PATH
 
 
+DEFAULT_MENU_ITEMS = (
+    ("new", "🔥", "ផុសថ្មី", "New Stock", "special:new", 1, 10),
+    ("featured", "⭐", "ពិសេស", "Featured", "special:featured", 1, 20),
+    ("promotion", "💰", "ប្រូម៉ូសិន", "Promotion", "special:promotion", 1, 30),
+    ("contact", "📞", "ទាក់ទង", "Contact", "contact", 1, 40),
+    ("search", "🔍", "ស្វែងរក Followers", "Search Followers", "search:start", 1, 50),
+    ("notify", "🔔", "Notify Me", "Notify Me", "notify:toggle", 1, 60),
+    ("orders", "📦", "My Orders", "My Orders", "orders:mine", 1, 70),
+    ("language", "🌐", "Language", "Language", "language:choose", 1, 80),
+)
+
+
 def connect():
     con = sqlite3.connect(DB_PATH, timeout=10)
     con.execute("PRAGMA foreign_keys=ON")
@@ -146,6 +158,23 @@ def init_db():
         FOREIGN KEY(stock_id) REFERENCES stocks(id)
     )
     """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS menu_items (
+        item_key TEXT PRIMARY KEY,
+        emoji TEXT NOT NULL DEFAULT '',
+        label_km TEXT NOT NULL DEFAULT '',
+        label_en TEXT NOT NULL DEFAULT '',
+        callback_data TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        position INTEGER NOT NULL DEFAULT 0
+    )
+    """)
+    cur.executemany("""
+        INSERT OR IGNORE INTO menu_items (
+            item_key, emoji, label_km, label_en, callback_data, enabled, position
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, DEFAULT_MENU_ITEMS)
 
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_stocks_followers ON stocks(followers)"
@@ -815,6 +844,107 @@ def get_orders_by_group(group_name, limit=30):
     rows = cur.fetchall()
     con.close()
     return rows
+
+
+def get_menu_items(enabled_only=False):
+    con = connect()
+    cur = con.cursor()
+    query = """
+        SELECT item_key, emoji, label_km, label_en, callback_data, enabled, position
+        FROM menu_items
+    """
+    if enabled_only:
+        query += " WHERE enabled=1"
+    query += " ORDER BY position ASC, item_key ASC"
+    cur.execute(query)
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+
+def get_menu_item(item_key):
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT item_key, emoji, label_km, label_en, callback_data, enabled, position
+        FROM menu_items WHERE item_key=?
+    """, (item_key,))
+    row = cur.fetchone()
+    con.close()
+    return row
+
+
+def update_menu_item(item_key, field, value):
+    if field not in {"emoji", "label_km", "label_en", "enabled"}:
+        return False
+    if field == "enabled":
+        value = 1 if value else 0
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        f"UPDATE menu_items SET {field}=? WHERE item_key=?",
+        (value, item_key),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def move_menu_item(item_key, direction):
+    if direction not in {"up", "down"}:
+        return False
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        "SELECT position FROM menu_items WHERE item_key=?",
+        (item_key,),
+    )
+    current = cur.fetchone()
+    if not current:
+        con.close()
+        return False
+    operator = "<" if direction == "up" else ">"
+    ordering = "DESC" if direction == "up" else "ASC"
+    cur.execute(
+        f"SELECT item_key, position FROM menu_items "
+        f"WHERE position {operator} ? ORDER BY position {ordering} LIMIT 1",
+        (current[0],),
+    )
+    neighbor = cur.fetchone()
+    if not neighbor:
+        con.close()
+        return False
+    cur.execute(
+        "UPDATE menu_items SET position=? WHERE item_key=?",
+        (neighbor[1], item_key),
+    )
+    cur.execute(
+        "UPDATE menu_items SET position=? WHERE item_key=?",
+        (current[0], neighbor[0]),
+    )
+    con.commit()
+    con.close()
+    return True
+
+
+def reset_menu_items():
+    con = connect()
+    cur = con.cursor()
+    cur.executemany("""
+        INSERT INTO menu_items (
+            item_key, emoji, label_km, label_en, callback_data, enabled, position
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_key) DO UPDATE SET
+            emoji=excluded.emoji,
+            label_km=excluded.label_km,
+            label_en=excluded.label_en,
+            callback_data=excluded.callback_data,
+            enabled=excluded.enabled,
+            position=excluded.position
+    """, DEFAULT_MENU_ITEMS)
+    con.commit()
+    con.close()
 
 
 def search_by_followers(k):

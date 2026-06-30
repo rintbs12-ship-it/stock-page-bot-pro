@@ -5,9 +5,14 @@ from database.db import (
     add_admin,
     clear_photo_upload_session,
     get_setting,
+    get_menu_item,
+    get_menu_items,
     list_admins,
+    move_menu_item,
     remove_admin,
+    reset_menu_items,
     set_setting,
+    update_menu_item,
 )
 
 
@@ -27,6 +32,7 @@ def settings_menu():
         [InlineKeyboardButton("⭐ Default Quality", callback_data="admin:settings_quality")],
         [InlineKeyboardButton("👑 Admin Manager", callback_data="admin:settings_admins")],
         [InlineKeyboardButton("📢 Announcement", callback_data="admin:settings_announcement")],
+        [InlineKeyboardButton("🎨 Menu Editor", callback_data="admin:settings_menu")],
         [InlineKeyboardButton("⬅ Back", callback_data="admin:home")],
     ])
 
@@ -103,6 +109,59 @@ def settings_summary():
     )
 
 
+def menu_editor_keyboard(items):
+    rows = [
+        [InlineKeyboardButton(
+            f"{'✅' if enabled else '❌'} {emoji} {label_km}".strip(),
+            callback_data=f"admin:settings_menu_item:{item_key}",
+        )]
+        for item_key, emoji, label_km, label_en, callback_data, enabled, position in items
+    ]
+    rows.extend([
+        [InlineKeyboardButton(
+            "↩️ Reset Default Menu",
+            callback_data="admin:settings_menu_reset",
+        )],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:settings")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def menu_item_editor_keyboard(item):
+    item_key, emoji, label_km, label_en, callback_data, enabled, position = item
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "✏️ Edit Button Text",
+            callback_data=f"admin:settings_menu_text:{item_key}",
+        )],
+        [InlineKeyboardButton(
+            "😀 Edit Emoji",
+            callback_data=f"admin:settings_menu_emoji:{item_key}",
+        )],
+        [InlineKeyboardButton(
+            "❌ Disable" if enabled else "✅ Enable",
+            callback_data=f"admin:settings_menu_toggle:{item_key}",
+        )],
+        [InlineKeyboardButton(
+            "⬆️ Move Up",
+            callback_data=f"admin:settings_menu_move:{item_key}:up",
+        ), InlineKeyboardButton(
+            "⬇️ Move Down",
+            callback_data=f"admin:settings_menu_move:{item_key}:down",
+        )],
+        [InlineKeyboardButton("⬅ Back", callback_data="admin:settings_menu")],
+    ])
+
+
+def menu_item_editor_text(item):
+    item_key, emoji, label_km, label_en, callback_data, enabled, position = item
+    return (
+        "🎨 Menu Editor\n\n"
+        f"Current Button:\n{emoji} {label_km}\n\n"
+        f"Status: {'Enabled' if enabled else 'Disabled'}"
+    )
+
+
 def _begin_text_edit(context, key):
     context.user_data.clear()
     context.user_data.update({
@@ -115,8 +174,105 @@ async def handle_settings_callback(query, context):
     data = query.data
     user_id = query.from_user.id
 
+    if data.startswith("admin:settings_menu") and user_id != OWNER_ID:
+        await query.edit_message_text(
+            "⛔ Only the main owner can access Menu Editor.",
+            reply_markup=settings_menu(),
+        )
+        return
+
     if data == "admin:settings":
         await query.edit_message_text(settings_summary(), reply_markup=settings_menu())
+        return
+
+    if data == "admin:settings_menu":
+        await query.edit_message_text(
+            "🎨 Menu Editor\n\nSelect a customer menu button:",
+            reply_markup=menu_editor_keyboard(get_menu_items()),
+        )
+        return
+
+    if data == "admin:settings_menu_reset":
+        reset_menu_items()
+        await query.edit_message_text(
+            "✅ Customer menu restored to defaults.",
+            reply_markup=menu_editor_keyboard(get_menu_items()),
+        )
+        return
+
+    if data.startswith("admin:settings_menu_item:"):
+        item_key = data.rsplit(":", 1)[1]
+        item = get_menu_item(item_key)
+        if not item:
+            await query.edit_message_text(
+                "Menu button not found.",
+                reply_markup=menu_editor_keyboard(get_menu_items()),
+            )
+            return
+        await query.edit_message_text(
+            menu_item_editor_text(item),
+            reply_markup=menu_item_editor_keyboard(item),
+        )
+        return
+
+    if data.startswith("admin:settings_menu_text:"):
+        item_key = data.rsplit(":", 1)[1]
+        item = get_menu_item(item_key)
+        if not item:
+            await query.edit_message_text("Menu button not found.")
+            return
+        context.user_data.clear()
+        context.user_data.update({
+            "admin_mode": "settings_menu_text",
+            "menu_item_key": item_key,
+        })
+        await query.edit_message_text(
+            f"Current Button:\n{item[1]} {item[2]}\n\n"
+            "Send the new button text.\nExample: New Stock",
+            reply_markup=back_to_settings(),
+        )
+        return
+
+    if data.startswith("admin:settings_menu_emoji:"):
+        item_key = data.rsplit(":", 1)[1]
+        item = get_menu_item(item_key)
+        if not item:
+            await query.edit_message_text("Menu button not found.")
+            return
+        context.user_data.clear()
+        context.user_data.update({
+            "admin_mode": "settings_menu_emoji",
+            "menu_item_key": item_key,
+        })
+        await query.edit_message_text(
+            f"Current Button:\n{item[1]} {item[2]}\n\n"
+            "Send the new emoji.",
+            reply_markup=back_to_settings(),
+        )
+        return
+
+    if data.startswith("admin:settings_menu_toggle:"):
+        item_key = data.rsplit(":", 1)[1]
+        item = get_menu_item(item_key)
+        if not item:
+            await query.edit_message_text("Menu button not found.")
+            return
+        update_menu_item(item_key, "enabled", not bool(item[5]))
+        updated = get_menu_item(item_key)
+        await query.edit_message_text(
+            menu_item_editor_text(updated),
+            reply_markup=menu_item_editor_keyboard(updated),
+        )
+        return
+
+    if data.startswith("admin:settings_menu_move:"):
+        _, _, item_key, direction = data.split(":")
+        move_menu_item(item_key, direction)
+        item = get_menu_item(item_key)
+        await query.edit_message_text(
+            menu_item_editor_text(item),
+            reply_markup=menu_item_editor_keyboard(item),
+        )
         return
 
     if data == "admin:settings_profile":
@@ -300,6 +456,40 @@ async def handle_settings_callback(query, context):
 
 async def handle_settings_message(update, context):
     mode = context.user_data.get("admin_mode")
+    if mode in {"settings_menu_text", "settings_menu_emoji"}:
+        if not update.message.text:
+            await update.message.reply_text("Please send text.")
+            return True
+        value = update.message.text.strip()
+        item_key = context.user_data.get("menu_item_key")
+        item = get_menu_item(item_key)
+        if not item:
+            context.user_data.clear()
+            await update.message.reply_text("Menu button not found.")
+            return True
+        if mode == "settings_menu_text":
+            if "\n" in value or not 1 <= len(value) <= 50:
+                await update.message.reply_text(
+                    "Button text must be one line and 1–50 characters."
+                )
+                return True
+            update_menu_item(item_key, "label_km", value)
+            update_menu_item(item_key, "label_en", value)
+        else:
+            if any(character.isspace() for character in value) or not 1 <= len(value) <= 8:
+                await update.message.reply_text(
+                    "Send only one emoji (maximum 8 characters)."
+                )
+                return True
+            update_menu_item(item_key, "emoji", value)
+        context.user_data.clear()
+        updated = get_menu_item(item_key)
+        await update.message.reply_text(
+            f"✅ Menu button updated:\n{updated[1]} {updated[2]}",
+            reply_markup=menu_item_editor_keyboard(updated),
+        )
+        return True
+
     if mode == "settings_logo":
         if not update.message.photo:
             await update.message.reply_text("Please send one photo.")

@@ -110,18 +110,29 @@ def is_admin(user_id: int) -> bool:
 
 
 def get_welcome_text(language):
-    store_name = get_setting("store_name", "RS SERVICE")
+    store_name = get_setting(
+        "theme_store_title",
+        get_setting("store_name", "RS SERVICE"),
+    )
     description = get_setting("store_description", "Stock Page Bot")
-    custom_welcome = get_setting("welcome_message", "")
+    custom_welcome = get_setting(
+        "theme_welcome_text",
+        get_setting("welcome_message", ""),
+    )
     announcement = get_setting("announcement", "")
+    welcome_emoji = get_setting("theme_welcome_emoji", "📦")
+    footer = get_setting("theme_footer_text", "")
+    separator = get_setting("theme_separator", "")
     if custom_welcome:
         body = custom_welcome
     else:
         lines = WELCOME[language].splitlines()
         body = "\n".join(lines[2:]).strip()
-    text = f"📦 {store_name} - {description}\n\n{body}"
+    text = f"{welcome_emoji} {store_name} - {description}\n\n{body}"
     if announcement:
         text += f"\n\n📢 {announcement}"
+    if footer:
+        text += f"\n\n{separator + chr(10) if separator else ''}{footer}"
     return text
 
 
@@ -287,6 +298,26 @@ def customer_stock_text(row, language):
     ) = row
     status_text = status.title()
     status_icon = "🟢" if status == "available" else "🔴"
+    stock_icon = get_setting("theme_icon_stock", "📦")
+    separator = get_setting("theme_separator", "━━━━━━━━━━━━━━━━━━")
+    template = get_setting("theme_stock_card_template", "")
+    template_values = {
+        "id": stock_id,
+        "followers": followers,
+        "country": country,
+        "audience": audience,
+        "female_percent": female_percent,
+        "male_percent": male_percent,
+        "price": price,
+        "quality": quality_percent,
+        "status": status_text,
+        "facebook_link": fb_link,
+    }
+    if template:
+        try:
+            return template.format_map(template_values)
+        except (KeyError, ValueError):
+            pass
     if language == "en":
         benefits = [
             "✅ Real Followers" if real_followers else "❌ Real Followers",
@@ -298,7 +329,7 @@ def customer_stock_text(row, language):
             "🏢 Business Ready" if business_ready else "❌ Not Business Ready",
         ]
         return (
-            f"📦 Stock #{stock_id}\n\n"
+            f"{stock_icon} Stock #{stock_id}\n\n"
             f"👥 Followers : {followers}K\n"
             f"🌍 Country : {country}\n"
             f"👩 Female Audience : {female_percent}%\n"
@@ -306,9 +337,10 @@ def customer_stock_text(row, language):
             f"💵 Price : {price}\n"
             f"🟢 Quality : {quality_percent}%\n"
             f"{status_icon} Status : {status_text}\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"{separator}\n\n" if separator else ""
+            +
             + "\n".join(benefits)
-            + "\n\n━━━━━━━━━━━━━━━━━━\n\n"
+            + (f"\n\n{separator}\n\n" if separator else "\n\n")
             f"🔗 Facebook Page\n{fb_link}"
         )
     benefits = [
@@ -321,7 +353,7 @@ def customer_stock_text(row, language):
         "🏢 សាកសមសម្រាប់អាជីវកម្ម" if business_ready else "❌ មិនសាកសមសម្រាប់អាជីវកម្ម",
     ]
     return (
-        f"📦 Stock #{stock_id}\n\n"
+        f"{stock_icon} Stock #{stock_id}\n\n"
         f"👥 Followers : {followers}K\n"
         f"🌍 Country : {country}\n"
         f"👩 Audience : ស្រីច្រើន ({female_percent}%)\n"
@@ -329,9 +361,9 @@ def customer_stock_text(row, language):
         f"💵 Price : {price}\n"
         f"🟢 គុណភាព : {quality_percent}%\n"
         f"{status_icon} Status : {status_text}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
+        (f"{separator}\n\n" if separator else "")
         + "\n".join(benefits)
-        + "\n\n━━━━━━━━━━━━━━━━━━\n\n"
+        + (f"\n\n{separator}\n\n" if separator else "\n\n")
         f"🔗 Facebook Page\n{fb_link}"
     )
 
@@ -407,7 +439,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if logo_file_id:
         await update.message.reply_photo(
             photo=logo_file_id,
-            caption=f"🏪 {get_setting('store_name', 'RS SERVICE')}",
+            caption=(
+                f"{get_setting('theme_welcome_emoji', '📦')} "
+                f"{get_setting('theme_store_title', get_setting('store_name', 'RS SERVICE'))}"
+            ),
         )
     await update.message.reply_text(
         get_welcome_text(language),

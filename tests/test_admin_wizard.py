@@ -55,27 +55,36 @@ class AdminWizardTests(unittest.TestCase):
             parse_followers_value("101K")
 
     def test_customer_menu_has_no_admin_callback(self):
-        menu = main_menu(False)
-        callbacks = [
-            button.callback_data
-            for row in menu.inline_keyboard
-            for button in row
-        ]
-        self.assertFalse(any(value and value.startswith("admin:") for value in callbacks))
-        self.assertEqual(
-            [len(row) for row in menu.inline_keyboard],
-            [2, 2, 2, 2, 2, 2, 1, 1],
-        )
-        self.assertTrue({
-            "range:1:5", "range:6:10", "range:11:20", "range:21:30",
-            "range:31:50", "range:51:100", "special:featured",
-            "special:promotion", "contact", "search:start",
-            "language:choose", "notify:toggle",
-            "orders:mine",
-        }.issubset(set(callbacks)))
-        self.assertTrue({
-            "advanced:home", "favorites:list", "trending:list", "filters:home",
-        }.isdisjoint(set(callbacks)))
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "menu.db")
+            try:
+                db.init_db()
+                menu = main_menu(False)
+                callbacks = [
+                    button.callback_data
+                    for row in menu.inline_keyboard
+                    for button in row
+                ]
+                self.assertFalse(any(
+                    value and value.startswith("admin:") for value in callbacks
+                ))
+                self.assertEqual(
+                    [len(row) for row in menu.inline_keyboard],
+                    [2, 2, 2, 2, 2, 2, 1, 1],
+                )
+                self.assertTrue({
+                    "range:1:5", "range:6:10", "range:11:20", "range:21:30",
+                    "range:31:50", "range:51:100", "special:featured",
+                    "special:promotion", "contact", "search:start",
+                    "language:choose", "notify:toggle", "orders:mine",
+                }.issubset(set(callbacks)))
+                self.assertTrue({
+                    "advanced:home", "favorites:list", "trending:list",
+                    "filters:home",
+                }.isdisjoint(set(callbacks)))
+            finally:
+                db.DB_PATH = old_path
 
     def test_admin_panel_has_all_required_actions(self):
         callbacks = {
@@ -473,6 +482,7 @@ class AdminWizardTests(unittest.TestCase):
                     "admin:settings_language", "admin:settings_currency",
                     "admin:settings_country", "admin:settings_quality",
                     "admin:settings_admins", "admin:settings_announcement",
+                    "admin:settings_menu",
                     "admin:home",
                 })
             finally:
@@ -501,6 +511,59 @@ class AdminWizardTests(unittest.TestCase):
                     for button in row
                 }
                 self.assertIn("admin:wizard:quality_percent:90", quality_callbacks)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_menu_editor_persists_text_emoji_enabled_order_and_reset(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "menu-editor.db")
+            try:
+                db.init_db()
+                items = db.get_menu_items()
+                self.assertEqual(len(items), 8)
+                self.assertEqual(
+                    [(item[1], item[2]) for item in items],
+                    [
+                        ("🔥", "ផុសថ្មី"), ("⭐", "ពិសេស"),
+                        ("💰", "ប្រូម៉ូសិន"), ("📞", "ទាក់ទង"),
+                        ("🔍", "ស្វែងរក Followers"), ("🔔", "Notify Me"),
+                        ("📦", "My Orders"), ("🌐", "Language"),
+                    ],
+                )
+
+                self.assertTrue(db.update_menu_item("new", "label_km", "New Launch"))
+                self.assertTrue(db.update_menu_item("new", "label_en", "New Launch"))
+                self.assertTrue(db.update_menu_item("new", "emoji", "🚀"))
+                menu = main_menu(False, "km")
+                labels = [
+                    button.text
+                    for row in menu.inline_keyboard
+                    for button in row
+                ]
+                self.assertIn("🚀 New Launch", labels)
+
+                self.assertTrue(db.update_menu_item("contact", "enabled", False))
+                callbacks = {
+                    button.callback_data
+                    for row in main_menu(False).inline_keyboard
+                    for button in row
+                }
+                self.assertNotIn("contact", callbacks)
+
+                self.assertTrue(db.move_menu_item("featured", "down"))
+                ordered_keys = [item[0] for item in db.get_menu_items()]
+                self.assertGreater(
+                    ordered_keys.index("featured"),
+                    ordered_keys.index("promotion"),
+                )
+
+                db.reset_menu_items()
+                reset_new = db.get_menu_item("new")
+                reset_contact = db.get_menu_item("contact")
+                self.assertEqual(reset_new[1:3], ("🔥", "ផុសថ្មី"))
+                self.assertEqual(reset_new[5:], (1, 10))
+                self.assertEqual(reset_contact[5], 1)
             finally:
                 db.DB_PATH = old_path
 
@@ -618,6 +681,19 @@ class AdminWizardTests(unittest.TestCase):
 
 
 class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_menu_editor_rejects_non_owner_admin(self):
+        query = SimpleNamespace(
+            data="admin:settings_menu",
+            from_user=SimpleNamespace(id=123456),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(user_data={})
+        await settings.handle_settings_callback(query, context)
+        self.assertIn(
+            "Only the main owner",
+            query.edit_message_text.await_args.args[0],
+        )
+
     async def test_cancel_order_removes_keyboard_and_returns_stock_without_duplicate(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:

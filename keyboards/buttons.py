@@ -1,6 +1,6 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import TELEGRAM_CONTACT, FACEBOOK_CONTACT
-from database.db import get_setting
+from database.db import get_menu_items, get_setting
 
 MENUS = [
     ("📁 Menu 1 (1K-5K)", "range:1:5"),
@@ -13,30 +13,45 @@ MENUS = [
 
 
 def main_menu(is_admin=False, language="km"):
-    new_label = "🔥 ផុសថ្មី" if language == "km" else "🔥 New Stock"
-    featured_label = "⭐ ពិសេស" if language == "km" else "⭐ Featured"
-    promotion_label = "💰 ប្រូម៉ូសិន" if language == "km" else "💰 Promotion"
-    contact_label = "📞 ទាក់ទង" if language == "km" else "📞 Contact"
-    search_label = "🔍 ស្វែងរក Followers" if language == "km" else "🔍 Search Followers"
-    notify_label = "🔔 ជូនដំណឹង" if language == "km" else "🔔 Notify Me"
-    rows = [
-        [InlineKeyboardButton(MENUS[0][0], callback_data=MENUS[0][1]),
-         InlineKeyboardButton(MENUS[1][0], callback_data=MENUS[1][1])],
-        [InlineKeyboardButton(MENUS[2][0], callback_data=MENUS[2][1]),
-         InlineKeyboardButton(MENUS[3][0], callback_data=MENUS[3][1])],
-        [InlineKeyboardButton(MENUS[4][0], callback_data=MENUS[4][1]),
-         InlineKeyboardButton(MENUS[5][0], callback_data=MENUS[5][1])],
-        [InlineKeyboardButton(new_label, callback_data="special:new"),
-         InlineKeyboardButton(featured_label, callback_data="special:featured")],
-        [InlineKeyboardButton(promotion_label, callback_data="special:promotion"),
-         InlineKeyboardButton(contact_label, callback_data="contact")],
-        [InlineKeyboardButton(search_label, callback_data="search:start"),
-         InlineKeyboardButton(notify_label, callback_data="notify:toggle")],
-        [InlineKeyboardButton("📦 My Orders", callback_data="orders:mine")],
-        [InlineKeyboardButton("🌐 Language / ភាសា", callback_data="language:choose")],
+    style = get_setting("theme_menu_style", "modern")
+    category_buttons = [
+        InlineKeyboardButton(text, callback_data=callback)
+        for text, callback in MENUS
     ]
+    if style == "minimal":
+        rows = [[button] for button in category_buttons]
+    else:
+        rows = [
+            category_buttons[index:index + 2]
+            for index in range(0, len(category_buttons), 2)
+        ]
+    line = []
+    for item_key, emoji, label_km, label_en, callback_data, enabled, position in get_menu_items(
+        enabled_only=True
+    ):
+        label = label_km if language == "km" else label_en
+        button = InlineKeyboardButton(
+            f"{emoji} {label}".strip(),
+            callback_data=callback_data,
+        )
+        if style in {"minimal", "classic"} or item_key in {"orders", "language"}:
+            if line:
+                rows.append(line)
+                line = []
+            rows.append([button])
+        else:
+            line.append(button)
+            if len(line) == 2:
+                rows.append(line)
+                line = []
+    if line:
+        rows.append(line)
     if is_admin:
-        rows.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin:home")])
+        admin_icon = get_setting("theme_icon_admin", "👑")
+        rows.append([InlineKeyboardButton(
+            f"{admin_icon} Admin Panel",
+            callback_data="admin:home",
+        )])
     return InlineKeyboardMarkup(rows)
 
 
