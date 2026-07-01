@@ -156,33 +156,40 @@ MANAGE_STOCK_CALLBACK_PREFIXES = (
     "admin:quick_status:", "admin:quick_set_status:", "admin:edit:",
     "admin:edit_field:", "admin:delete:", "admin:delete_confirm:",
     "admin:set_status:", "admin:flag:", "admin:photo_",
+    "admin:edit_price_mode:",
 )
 
 WIZARD_STEPS = (
-    "followers", "price", "audience", "country", "page_type", "female_percent",
-    "male_percent", "quality_percent", "real_followers", "organic_reach",
-    "monetized", "no_violation", "ready_transfer", "business_ready",
-    "fb_link", "status",
+    "followers", "price", "price_display_mode", "audience", "country",
+    "page_type", "female_percent", "male_percent", "quality_percent",
+    "real_followers", "organic_reach", "monetized", "no_violation",
+    "ready_transfer", "business_ready", "fb_link", "status",
 )
 
 WIZARD_PROMPTS = {
-    "followers": "🛠️ Add Stock Wizard\n\n1/16 Followers\nExample: 15 or 15K",
-    "price": "🛠️ Add Stock Wizard\n\n2/16 Price\nExample: $25",
-    "audience": "🛠️ Add Stock Wizard\n\n3/16 Audience type",
-    "country": "🛠️ Add Stock Wizard\n\n4/16 Country",
-    "page_type": "🛠️ Add Stock Wizard\n\n5/16 Page Type",
-    "female_percent": "🛠️ Add Stock Wizard\n\n6/16 Female percent\nExample: 55",
-    "male_percent": "🛠️ Add Stock Wizard\n\n7/16 Male percent\nExample: 45",
-    "quality_percent": "🛠️ Add Stock Wizard\n\n8/16 Quality percent",
-    "real_followers": "🛠️ Add Stock Wizard\n\n9/16 Real Followers",
-    "organic_reach": "🛠️ Add Stock Wizard\n\n10/16 Organic Reach",
-    "monetized": "🛠️ Add Stock Wizard\n\n11/16 Monetized",
-    "no_violation": "🛠️ Add Stock Wizard\n\n12/16 No Policy Violation",
-    "ready_transfer": "🛠️ Add Stock Wizard\n\n13/16 Ready to Transfer",
-    "business_ready": "🛠️ Add Stock Wizard\n\n14/16 Business Ready",
-    "fb_link": "🛠️ Add Stock Wizard\n\n15/16 Facebook Page Link",
-    "status": "🛠️ Add Stock Wizard\n\n16/16 Status",
+    "followers": "🛠️ Add Stock Wizard\n\n1/17 Followers\nExample: 15 or 15K",
+    "price": "🛠️ Add Stock Wizard\n\n2/17 Price\nExample: $25",
+    "price_display_mode": (
+        "🛠️ Add Stock Wizard\n\n3/17\n"
+        "តើចង់បង្ហាញតម្លៃបែបណា?"
+    ),
+    "audience": "🛠️ Add Stock Wizard\n\n4/17 Audience type",
+    "country": "🛠️ Add Stock Wizard\n\n5/17 Country",
+    "page_type": "🛠️ Add Stock Wizard\n\n6/17 Page Type",
+    "female_percent": "🛠️ Add Stock Wizard\n\n7/17 Female percent\nExample: 55",
+    "male_percent": "🛠️ Add Stock Wizard\n\n8/17 Male percent\nExample: 45",
+    "quality_percent": "🛠️ Add Stock Wizard\n\n9/17 Quality percent",
+    "real_followers": "🛠️ Add Stock Wizard\n\n10/17 Real Followers",
+    "organic_reach": "🛠️ Add Stock Wizard\n\n11/17 Organic Reach",
+    "monetized": "🛠️ Add Stock Wizard\n\n12/17 Monetized",
+    "no_violation": "🛠️ Add Stock Wizard\n\n13/17 No Policy Violation",
+    "ready_transfer": "🛠️ Add Stock Wizard\n\n14/17 Ready to Transfer",
+    "business_ready": "🛠️ Add Stock Wizard\n\n15/17 Business Ready",
+    "fb_link": "🛠️ Add Stock Wizard\n\n16/17 Facebook Page Link",
+    "status": "🛠️ Add Stock Wizard\n\n17/17 Status",
 }
+
+PRICE_DISPLAY_MODES = {"both", "total_only", "per_1k_only"}
 
 BOOLEAN_WIZARD_NEXT_STEPS = {
     "real_followers": "organic_reach",
@@ -248,7 +255,9 @@ def _advance_boolean_wizard(context, field, value):
 def _wizard_keyboard(step):
     if step == "page_type":
         return page_type_choices()
-    if step == "country":
+    if step == "price_display_mode":
+        base = _price_display_mode_keyboard("admin:wizard:price_mode")
+    elif step == "country":
         base = country_choices(get_setting("default_country", "Cambodia"))
     elif step == "audience":
         base = audience_choices()
@@ -270,6 +279,29 @@ def _wizard_keyboard(step):
         InlineKeyboardButton("⬅️ Back", callback_data="admin:wizard:back"),
         InlineKeyboardButton("❌ Cancel", callback_data="admin:wizard:cancel"),
     ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _price_display_mode_keyboard(callback_prefix, back_callback=None):
+    rows = [
+        [InlineKeyboardButton(
+            "1️⃣ បង្ហាញទាំងពីរ",
+            callback_data=f"{callback_prefix}:both",
+        )],
+        [InlineKeyboardButton(
+            "2️⃣ បង្ហាញតែតម្លៃសរុប",
+            callback_data=f"{callback_prefix}:total_only",
+        )],
+        [InlineKeyboardButton(
+            "3️⃣ បង្ហាញតែតម្លៃ/1K",
+            callback_data=f"{callback_prefix}:per_1k_only",
+        )],
+    ]
+    if back_callback:
+        rows.extend([
+            [InlineKeyboardButton("⬅️ Back", callback_data=back_callback)],
+            [InlineKeyboardButton("❌ Cancel", callback_data="global:cancel")],
+        ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -441,6 +473,7 @@ def save_stock_draft(context, status: str) -> int:
         ready_transfer=draft.get("ready_transfer", 1),
         business_ready=draft.get("business_ready", 1),
         page_type=draft.get("page_type"),
+        price_display_mode=draft.get("price_display_mode", "both"),
     )
 
 
@@ -511,15 +544,46 @@ def admin_stock_text(row) -> str:
 
 def customer_stock_text(row, language):
     if len(row) == 21:
-        row = (*row, None)
+        row = (*row, None, "both")
+    elif len(row) == 22:
+        row = (*row, "both")
     (
         stock_id, followers, country, audience, price, quality, description,
         fb_link, status, featured, promotion, created_at, female_percent,
         male_percent, quality_percent, real_followers, organic_reach,
         monetized, no_violation, ready_transfer, business_ready,
-        page_type,
+        page_type, price_display_mode,
     ) = row
     page_type = page_type or "Not set"
+    if price_display_mode not in PRICE_DISPLAY_MODES:
+        price_display_mode = "both"
+    follower_amount = Decimal(str(followers))
+    follower_number = format(follower_amount, "f")
+    if "." in follower_number:
+        follower_number = follower_number.rstrip("0").rstrip(".")
+    numeric_price = "".join(
+        character
+        for character in str(price or "").replace(",", "")
+        if character.isdigit() or character in {".", "-"}
+    )
+    try:
+        total_amount = Decimal(numeric_price)
+    except InvalidOperation:
+        total_amount = Decimal("0")
+    total_number = format(total_amount, "f")
+    if total_number.endswith(".00"):
+        total_number = total_number[:-3]
+    per_1k = (
+        (total_amount / follower_amount).to_integral_value(
+            rounding="ROUND_HALF_UP"
+        )
+        if follower_amount > 0 else Decimal("0")
+    )
+    price_lines = [f"👥 ចំនួន Follower : {follower_number}K"]
+    if price_display_mode in {"both", "per_1k_only"}:
+        price_lines.append(f"💵 តម្លៃ/1K : {per_1k}$")
+    if price_display_mode in {"both", "total_only"}:
+        price_lines.append(f"💰 តម្លៃសរុប : {total_number}$")
     status_text = status.title()
     status_icon = "🟢" if status == "available" else "🔴"
     stock_icon = get_setting("theme_icon_stock", "📦")
@@ -537,10 +601,33 @@ def customer_stock_text(row, language):
         "status": status_text,
         "facebook_link": fb_link,
         "page_type": page_type,
+        "price_display_mode": price_display_mode,
     }
     if template:
         try:
-            return template.format_map(template_values)
+            rendered = template.format_map(template_values)
+            rendered_lines = rendered.splitlines()
+            formatted_lines = []
+            price_replaced = False
+            for line in rendered_lines:
+                is_follower_line = (
+                    "Follower" in line or "អ្នកតាមដាន" in line
+                )
+                is_price_line = (
+                    "Price" in line
+                    or "តម្លៃ" in line
+                )
+                if is_follower_line:
+                    continue
+                if is_price_line and not price_replaced:
+                    formatted_lines.extend(price_lines)
+                    price_replaced = True
+                    continue
+                formatted_lines.append(line)
+            if not price_replaced:
+                insertion = 1 if formatted_lines else 0
+                formatted_lines[insertion:insertion] = price_lines
+            return "\n".join(formatted_lines)
         except (KeyError, ValueError):
             pass
     if language == "en":
@@ -556,11 +643,10 @@ def customer_stock_text(row, language):
         detail = (
             f"{stock_icon} Stock #{stock_id}\n\n"
             f"📂 Page Type : {page_type}\n"
-            f"👥 Followers : {followers}K\n"
+            f"{chr(10).join(price_lines)}\n"
             f"🌍 Country : {country}\n"
             f"👩 Female Audience : {female_percent}%\n"
             f"👨 Male Audience : {male_percent}%\n\n"
-            f"💵 Price : {price}\n"
             f"🟢 Quality : {quality_percent}%\n"
             f"{status_icon} Status : {status_text}\n\n"
         )
@@ -581,11 +667,10 @@ def customer_stock_text(row, language):
     detail = (
         f"{stock_icon} Stock #{stock_id}\n\n"
         f"📂 Page Type : {page_type}\n"
-        f"👥 Followers : {followers}K\n"
+        f"{chr(10).join(price_lines)}\n"
         f"🌍 Country : {country}\n"
         f"👩 Audience : ស្រីច្រើន ({female_percent}%)\n"
         f"👨 Audience : ប្រុស ({male_percent}%)\n\n"
-        f"💵 Price : {price}\n"
         f"🟢 គុណភាព : {quality_percent}%\n"
         f"{status_icon} Status : {status_text}\n\n"
     )
@@ -1528,6 +1613,49 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data.startswith("admin:edit_price_mode:"):
+        parts = data.split(":")
+        if len(parts) != 5:
+            await query.edit_message_text(
+                "Invalid price display request.", reply_markup=admin_home()
+            )
+            return
+        _, _, source, raw_stock_id, mode = parts
+        expected_admin_mode = (
+            "quick_edit" if source == "quick" else "edit_stock"
+        )
+        try:
+            stock_id = int(raw_stock_id)
+        except ValueError:
+            stock_id = 0
+        if (
+            source not in {"quick", "edit"}
+            or mode not in PRICE_DISPLAY_MODES
+            or context.user_data.get("admin_mode") != expected_admin_mode
+            or context.user_data.get("edit_stock_id") != stock_id
+            or "pending_price" not in context.user_data
+        ):
+            await query.edit_message_text(
+                "Invalid or expired price edit.", reply_markup=admin_home()
+            )
+            return
+        price = context.user_data["pending_price"]
+        update_stock_field(stock_id, "price", price)
+        update_stock_field(stock_id, "price_display_mode", mode)
+        add_audit_log(
+            uid, admin_display_name(query.from_user), "Edit Stock",
+            f"Stock #{stock_id}",
+            f"price={price}, price_display_mode={mode}",
+        )
+        context.user_data.clear()
+        row = get_stock(stock_id)
+        await query.edit_message_text(
+            f"✅ Price updated.\n\n{admin_stock_text(row)}",
+            reply_markup=admin_stock_actions(stock_id),
+            disable_web_page_preview=True,
+        )
+        return
+
     if data.startswith("admin:quick_field:"):
         _, _, stock_id, field = data.split(":")
         if field not in {
@@ -1629,6 +1757,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await _recover_invalid_wizard(query, context, uid, edit=True)
         context.user_data["draft"]["organic_reach"] = data.rsplit(":", 1)[1]
         context.user_data["admin_step"] = "monetized"
+        await _render_wizard_prompt(query, context, edit=True)
+        return
+
+    if data.startswith("admin:wizard:price_mode:"):
+        if not _wizard_is_valid(context, "price_display_mode"):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
+        mode = data.rsplit(":", 1)[1]
+        if mode not in PRICE_DISPLAY_MODES:
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
+        context.user_data["draft"]["price_display_mode"] = mode
+        context.user_data["admin_step"] = "audience"
         await _render_wizard_prompt(query, context, edit=True)
         return
 
@@ -2058,6 +2197,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError as exc:
                 await update.message.reply_text(f"Invalid value: {exc}")
                 return
+            if field == "price":
+                context.user_data["pending_price"] = value
+                await update.message.reply_text(
+                    "តើចង់បង្ហាញតម្លៃបែបណា?",
+                    reply_markup=_price_display_mode_keyboard(
+                        f"admin:edit_price_mode:quick:{stock_id}",
+                        f"admin:quick:{stock_id}",
+                    ),
+                )
+                return
             update_stock_field(stock_id, field, value)
             add_audit_log(
                 user_id, admin_display_name(update.effective_user), "Edit Stock",
@@ -2090,6 +2239,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     raise ValueError("Choose a valid Page Type.")
             except ValueError as exc:
                 await update.message.reply_text(f"Invalid value: {exc}")
+                return
+            if field == "price":
+                context.user_data["pending_price"] = value
+                await update.message.reply_text(
+                    "តើចង់បង្ហាញតម្លៃបែបណា?",
+                    reply_markup=_price_display_mode_keyboard(
+                        f"admin:edit_price_mode:edit:{stock_id}",
+                        f"admin:edit:{stock_id}",
+                    ),
+                )
                 return
             update_stock_field(stock_id, field, value)
             add_audit_log(
@@ -2154,8 +2313,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             context.user_data.setdefault("draft", {})["price"] = price
-            context.user_data["admin_step"] = "audience"
+            context.user_data["admin_step"] = "price_display_mode"
             await _render_wizard_prompt(update.message, context)
+            return
+
+        if context.user_data.get("admin_step") == "price_display_mode":
+            await _render_wizard_prompt(
+                update.message,
+                context,
+                text="តើចង់បង្ហាញតម្លៃបែបណា?",
+            )
             return
 
         if context.user_data.get("admin_step") == "country":

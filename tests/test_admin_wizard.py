@@ -744,6 +744,31 @@ class AdminWizardTests(unittest.TestCase):
         self.assertIn("Female Audience : 55%", english)
         self.assertIn("Quality : 95%", english)
         self.assertIn("📂 Page Type : Not set", english)
+        self.assertIn("💵 តម្លៃ/1K : 2$", english)
+        self.assertIn("👥 ចំនួន Follower : 15K", english)
+        self.assertIn("💰 តម្លៃសរុប : 25$", english)
+
+        price_row = (
+            8, 6.2, "Cambodia", "female", "$56", "95%", "",
+            "https://fb.test", "available", 0, 0, "",
+            55, 45, 95, 1, "high", 1, 1, 1, 1,
+        )
+        expected = (
+            "👥 ចំនួន Follower : 6.2K\n"
+            "💵 តម្លៃ/1K : 9$\n"
+            "💰 តម្លៃសរុប : 56$"
+        )
+        self.assertIn(expected, customer_stock_text(price_row, "km"))
+        total_only = customer_stock_text(
+            (*price_row, None, "total_only"), "km"
+        )
+        self.assertNotIn("តម្លៃ/1K", total_only)
+        self.assertIn("💰 តម្លៃសរុប : 56$", total_only)
+        per_1k_only = customer_stock_text(
+            (*price_row, None, "per_1k_only"), "km"
+        )
+        self.assertIn("💵 តម្លៃ/1K : 9$", per_1k_only)
+        self.assertNotIn("តម្លៃសរុប", per_1k_only)
 
     def test_stock_detail_buttons_are_localized(self):
         khmer_labels = {
@@ -1236,7 +1261,10 @@ class AdminWizardTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     customer_stock_text(row, "en"),
-                    "🪪 Stock #7\nPrice: $25\nFollowers: 15K",
+                    "🪪 Stock #7\n"
+                    "👥 ចំនួន Follower : 15K\n"
+                    "💵 តម្លៃ/1K : 2$\n"
+                    "💰 តម្លៃសរុប : 25$",
                 )
 
                 db.set_setting("theme_stock_card_template", "")
@@ -1690,7 +1718,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def _ready_transfer_context(value=None):
         draft = {
             field: value if value is not None else f"{field}-value"
-            for field in WIZARD_STEPS[:12]
+            for field in WIZARD_STEPS[:13]
         }
         return SimpleNamespace(
             user_data={
@@ -1964,7 +1992,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         context.user_data["admin_step"], "business_ready"
                     )
                     self.assertIn(
-                        "14/16 Business Ready",
+                        "15/17 Business Ready",
                         query.edit_message_text.await_args.args[0],
                     )
             finally:
@@ -2000,7 +2028,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         context.user_data["admin_step"], "business_ready"
                     )
                     self.assertIn(
-                        "14/16 Business Ready",
+                        "15/17 Business Ready",
                         message.reply_text.await_args.args[0],
                     )
 
@@ -2043,7 +2071,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(context.user_data["admin_step"], "no_violation")
                 self.assertIs(context.user_data["draft"], original_draft)
                 self.assertIn(
-                    "12/16 No Policy Violation",
+                    "13/17 No Policy Violation",
                     back_query.edit_message_text.await_args.args[0],
                 )
 
@@ -2063,8 +2091,8 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_ready_transfer_is_present_in_wizard_state_and_prompt_mappings(self):
         self.assertEqual(set(WIZARD_STEPS), set(WIZARD_PROMPTS))
-        self.assertEqual(WIZARD_STEPS[12], "ready_transfer")
-        self.assertEqual(WIZARD_STEPS[13], "business_ready")
+        self.assertEqual(WIZARD_STEPS[13], "ready_transfer")
+        self.assertEqual(WIZARD_STEPS[14], "business_ready")
         callbacks = {
             button.callback_data
             for row in _wizard_keyboard("ready_transfer").inline_keyboard
@@ -2090,6 +2118,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         "draft": {
                             "followers": 15,
                             "price": "$50",
+                            "price_display_mode": "both",
                             "country": "Cambodia",
                             "audience": "female",
                         },
@@ -2119,9 +2148,110 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(context.user_data["admin_step"], "female_percent")
                 self.assertEqual(message.reply_text.await_count, 2)
                 self.assertIn(
-                    "6/16 Female percent",
+                    "7/17 Female percent",
                     message.reply_text.await_args_list[1].args[0],
                 )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_price_display_mode_add_edit_and_sqlite_default(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "price-display-mode.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    8, "Cambodia", "All", "$56", "100%", "",
+                    "https://facebook.com/price-mode", "available",
+                )
+                self.assertEqual(db.get_stock(stock_id)[22], "both")
+
+                context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create",
+                        "admin_step": "price",
+                        "draft": {"followers": 8},
+                    },
+                    chat_data={},
+                )
+                price_message = SimpleNamespace(
+                    text="56", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=price_message,
+                    ),
+                    context,
+                )
+                self.assertEqual(
+                    context.user_data["admin_step"], "price_display_mode"
+                )
+                self.assertIn(
+                    "តើចង់បង្ហាញតម្លៃបែបណា?",
+                    price_message.reply_text.await_args.args[0],
+                )
+                callbacks = {
+                    button.callback_data
+                    for row in price_message.reply_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                    for button in row
+                }
+                self.assertTrue({
+                    "admin:wizard:price_mode:both",
+                    "admin:wizard:price_mode:total_only",
+                    "admin:wizard:price_mode:per_1k_only",
+                    "admin:wizard:back",
+                    "admin:wizard:cancel",
+                }.issubset(callbacks))
+
+                query = self._wizard_query(
+                    "admin:wizard:price_mode:total_only"
+                )
+                await handle_callback(
+                    SimpleNamespace(callback_query=query), context
+                )
+                self.assertEqual(
+                    context.user_data["draft"]["price_display_mode"],
+                    "total_only",
+                )
+                self.assertEqual(context.user_data["admin_step"], "audience")
+
+                edit_context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "edit_stock",
+                        "edit_stock_id": stock_id,
+                        "edit_field": "price",
+                    },
+                    chat_data={},
+                )
+                edit_message = SimpleNamespace(
+                    text="$64", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(
+                            id=619658883, username="owner",
+                            first_name="Owner", last_name="",
+                        ),
+                        message=edit_message,
+                    ),
+                    edit_context,
+                )
+                self.assertEqual(
+                    edit_context.user_data["pending_price"], "$64"
+                )
+                edit_query = self._wizard_query(
+                    f"admin:edit_price_mode:edit:{stock_id}:per_1k_only"
+                )
+                await handle_callback(
+                    SimpleNamespace(callback_query=edit_query),
+                    edit_context,
+                )
+                stock = db.get_stock(stock_id)
+                self.assertEqual(stock[4], "$64")
+                self.assertEqual(stock[22], "per_1k_only")
             finally:
                 db.DB_PATH = old_path
 
@@ -2134,6 +2264,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 draft = {
                     "followers": 15,
                     "price": "$50",
+                    "price_display_mode": "both",
                     "country": "Cambodia",
                     "audience": "female",
                     "page_type": "Movie",
@@ -2161,7 +2292,7 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(context.user_data["admin_step"], "female_percent")
                 self.assertIs(context.user_data["draft"], draft)
                 self.assertEqual(context.user_data["draft"]["female_percent"], 55)
-                self.assertIn("6/16 Female percent", query.edit_message_text.await_args.args[0])
+                self.assertIn("7/17 Female percent", query.edit_message_text.await_args.args[0])
                 markup = query.edit_message_text.await_args.kwargs["reply_markup"]
                 callbacks = {
                     button.callback_data

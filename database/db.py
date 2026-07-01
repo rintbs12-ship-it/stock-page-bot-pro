@@ -68,6 +68,7 @@ def init_db():
         "business_ready": "INTEGER DEFAULT 1",
         "category": "TEXT DEFAULT ''",
         "page_type": "TEXT",
+        "price_display_mode": "TEXT NOT NULL DEFAULT 'both'",
     }
     existing_columns = {
         row[1] for row in cur.execute("PRAGMA table_info(stocks)").fetchall()
@@ -1188,8 +1189,10 @@ def create_stock(
     status, featured=0, promotion=0, female_percent=0, male_percent=0,
     quality_percent=100, real_followers=1, organic_reach="high",
     monetized=1, no_violation=1, ready_transfer=1, business_ready=1,
-    page_type=None,
+    page_type=None, price_display_mode="both",
 ):
+    if price_display_mode not in {"both", "total_only", "per_1k_only"}:
+        price_display_mode = "both"
     con = connect()
     cur = con.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1199,13 +1202,14 @@ def create_stock(
             fb_link, status, featured, promotion, created_at,
             female_percent, male_percent, quality_percent, real_followers,
             organic_reach, monetized, no_violation, ready_transfer,
-            business_ready, page_type
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            business_ready, page_type, price_display_mode
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         followers, country, audience, price, quality, description, fb_link,
         status, featured, promotion, now, female_percent, male_percent,
         quality_percent, real_followers, organic_reach, monetized,
         no_violation, ready_transfer, business_ready, page_type,
+        price_display_mode,
     ))
     stock_id = cur.lastrowid
     con.commit()
@@ -1366,7 +1370,7 @@ def get_stock(stock_id):
                fb_link, status, featured, promotion, created_at,
                female_percent, male_percent, quality_percent, real_followers,
                organic_reach, monetized, no_violation, ready_transfer,
-               business_ready, page_type
+               business_ready, page_type, price_display_mode
         FROM stocks WHERE id=?
     """, (stock_id,))
     row = cur.fetchone()
@@ -2898,8 +2902,14 @@ def update_stock_field(stock_id, field, value):
         "female_percent", "male_percent", "quality_percent",
         "real_followers", "organic_reach", "monetized", "no_violation",
         "ready_transfer", "business_ready", "page_type",
+        "price_display_mode",
     }
     if field not in allowed:
+        return False
+    if (
+        field == "price_display_mode"
+        and value not in {"both", "total_only", "per_1k_only"}
+    ):
         return False
     con = connect()
     cur = con.cursor()
