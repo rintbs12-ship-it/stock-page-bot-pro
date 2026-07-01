@@ -140,6 +140,12 @@ Please choose a menu below:
 }
 
 LOGGER = logging.getLogger(__name__)
+PHOTO_UPLOAD_FINISH_TEXTS = {
+    "/done",
+    "/រួចរាល់",
+    "✅ /done",
+    "✅ /រួចរាល់",
+}
 
 MANAGE_STOCK_CALLBACK_PREFIXES = (
     "admin:stock:", "admin:quick:", "admin:quick_field:",
@@ -1657,14 +1663,57 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def _normalize_photo_finish_text(value: str) -> str:
+    return " ".join(
+        (value or "").replace("\ufe0f", "").replace("\u00a0", " ").split()
+    )
+
+
+async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    effective_message = getattr(update, "effective_message", None) or update.message
     stock_id = get_photo_upload_session(user_id) if is_admin(user_id) else None
+    memory_mode = context.user_data.get("admin_mode")
+    memory_stock_id = context.user_data.get("last_stock_id")
+    LOGGER.info(
+        "Photo upload finish entered: user_id=%s text=%r sqlite_stock_id=%s "
+        "admin_mode=%r memory_stock_id=%s photo_count=%s",
+        user_id,
+        getattr(effective_message, "text", None),
+        stock_id,
+        memory_mode,
+        memory_stock_id,
+        context.user_data.get("photo_count"),
+    )
+    if not stock_id and memory_mode == "upload_photos" and memory_stock_id:
+        stock_id = memory_stock_id
+        LOGGER.warning(
+            "Photo upload SQLite session missing; recovered from memory: "
+            "user_id=%s stock_id=%s",
+            user_id,
+            stock_id,
+        )
     if stock_id:
         photo_count = context.user_data.get("photo_count")
         if photo_count is None:
             photo_count = len(get_stock_photos(stock_id))
+        persisted_count = len(get_stock_photos(stock_id))
+        LOGGER.info(
+            "Photo upload photos verified in SQLite: user_id=%s stock_id=%s "
+            "session_count=%s persisted_count=%s",
+            user_id,
+            stock_id,
+            photo_count,
+            persisted_count,
+        )
         clear_photo_upload_session(user_id)
+        LOGGER.info(
+            "Photo upload SQLite state cleared: user_id=%s stock_id=%s "
+            "remaining_session=%s",
+            user_id,
+            stock_id,
+            get_photo_upload_session(user_id),
+        )
         if consume_pending_stock_notification(stock_id):
             row = get_stock(stock_id)
             if row:
@@ -1692,6 +1741,17 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if getattr(context, "chat_data", None) is not None:
             context.chat_data.pop("waiting_for_photos", None)
         context.user_data.clear()
+        LOGGER.info(
+            "Photo upload memory state cleared: user_id=%s "
+            "user_data_keys=%s chat_waiting=%s",
+            user_id,
+            list(context.user_data),
+            (
+                context.chat_data.get("waiting_for_photos")
+                if getattr(context, "chat_data", None) is not None
+                else None
+            ),
+        )
         await update.message.reply_text(
             "✅ បានបន្ថែមរូបភាពដោយជោគជ័យ\n"
             f"📷 បានបន្ថែម {photo_count} រូបភាព",
@@ -1701,19 +1761,60 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👑 ផ្ទាំងគ្រប់គ្រង Admin",
             reply_markup=admin_home(),
         )
-        return
+        LOGGER.info(
+            "Photo upload finish completed: user_id=%s stock_id=%s "
+            "returning=ConversationHandler.END",
+            user_id,
+            stock_id,
+        )
+        return ConversationHandler.END
+    LOGGER.warning(
+        "Photo upload finish received without active upload session: "
+        "user_id=%s admin_mode=%r memory_stock_id=%s; returning home",
+        user_id,
+        memory_mode,
+        memory_stock_id,
+    )
     await start(update, context)
+    return ConversationHandler.END
+
+
+async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    effective_message = getattr(update, "effective_message", None) or update.message
+    LOGGER.info(
+        "Photo upload completion handler selected: user_id=%s text=%r",
+        update.effective_user.id,
+        getattr(effective_message, "text", None),
+    )
+    return await finish_upload(update, context)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     language = get_user_language(user_id)
     text = (getattr(update.message, "text", None) or "").strip()
+    normalized_text = _normalize_photo_finish_text(text)
+    LOGGER.info(
+        "Text handler received: user_id=%s text=%r normalized=%r "
+        "admin_mode=%r admin_step=%r sqlite_upload_stock_id=%s",
+        user_id,
+        text,
+        normalized_text,
+        context.user_data.get("admin_mode"),
+        context.user_data.get("admin_step"),
+        get_photo_upload_session(user_id) if is_admin(user_id) else None,
+    )
 
     if text == "🚀 /start":
         return await start(update, context)
 
-    if text in {"/done", "/រួចរាល់", "✅ /រួចរាល់", "✅ /done"}:
+    if normalized_text in PHOTO_UPLOAD_FINISH_TEXTS:
+        LOGGER.info(
+            "Photo upload completion alias matched in text fallback: "
+            "user_id=%s normalized=%r",
+            user_id,
+            normalized_text,
+        )
         return await handle_command(update, context)
 
     if text in {"❌ Cancel", "❌ បោះបង់"} and context.user_data.get(
@@ -1815,9 +1916,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("admin_mode") != "upload_photos":
             begin_photo_upload(context, user_id, stock_id)
         file_id = update.message.photo[-1].file_id
-        if add_stock_photo(stock_id, file_id):
+        inserted = add_stock_photo(stock_id, file_id)
+        if inserted:
             context.user_data["photo_count"] = context.user_data.get("photo_count", 0) + 1
         total = len(get_stock_photos(stock_id))
+        LOGGER.info(
+            "Photo upload saved to SQLite: user_id=%s stock_id=%s "
+            "file_id=%s inserted=%s persisted_count=%s session_count=%s",
+            user_id,
+            stock_id,
+            file_id,
+            inserted,
+            total,
+            context.user_data.get("photo_count", 0),
+        )
         await update.message.reply_text(
             f"✅ រក្សាទុករូបភាពបានជោគជ័យ ({total} សរុប)។ "
             "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /រួចរាល់ ដើម្បីបញ្ចប់។",
@@ -1906,6 +2018,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get("admin_mode"):
         if context.user_data.get("admin_mode") == "upload_photos":
+            LOGGER.warning(
+                "Photo upload text did not match finish aliases: "
+                "user_id=%s raw=%r normalized=%r; prompting again",
+                user_id,
+                text,
+                normalized_text,
+            )
             await update.message.reply_text(
                 "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /រួចរាល់ ដើម្បីបញ្ចប់។",
                 reply_markup=photo_upload_reply_keyboard(),

@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from telegram import Chat, Message, Update, User
 from telegram.error import Forbidden, TelegramError
+from telegram.ext import ConversationHandler
 
 import bot
 from localization import translate_reply_markup, translate_ui_text
@@ -3134,13 +3136,14 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 done_message = SimpleNamespace(
                     text="✅ /រួចរាល់", photo=None, reply_text=AsyncMock()
                 )
-                await handle_text(
+                result = await handle_text(
                     SimpleNamespace(
                         effective_user=SimpleNamespace(id=619658883),
                         message=done_message,
                     ),
                     context,
                 )
+                self.assertEqual(result, ConversationHandler.END)
                 self.assertIsNone(db.get_photo_upload_session(619658883))
                 start_markup = (
                     done_message.reply_text.await_args_list[-2].kwargs[
@@ -3165,13 +3168,14 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     finish_message = SimpleNamespace(
                         text=finish_text, photo=None, reply_text=AsyncMock()
                     )
-                    await handle_text(
+                    result = await handle_text(
                         SimpleNamespace(
                             effective_user=SimpleNamespace(id=619658883),
                             message=finish_message,
                         ),
                         context,
                     )
+                    self.assertEqual(result, ConversationHandler.END)
                     self.assertIsNone(db.get_photo_upload_session(619658883))
                     self.assertEqual(context.user_data, {})
                     self.assertNotIn("waiting_for_photos", context.chat_data)
@@ -3191,6 +3195,29 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(context.user_data, {})
             finally:
                 db.DB_PATH = old_path
+
+    def test_photo_finish_aliases_use_dedicated_first_handler(self):
+        with patch.object(bot, "BOT_TOKEN", "123456:ABCDEF"):
+            app = bot.build_application()
+        handler = app.handlers[0][0]
+        self.assertIs(handler.callback, handle_command)
+        for index, text in enumerate(
+            ("/done", "/រួចរាល់", "✅ /រួចរាល់", "✅️ /រួចរាល់"),
+            start=1,
+        ):
+            message = Message(
+                message_id=index,
+                date=datetime.now(),
+                chat=Chat(id=619658883, type="private"),
+                from_user=User(
+                    id=619658883,
+                    first_name="Admin",
+                    is_bot=False,
+                ),
+                text=text,
+            )
+            update = Update(update_id=index, message=message)
+            self.assertTrue(handler.check_update(update), text)
 
 
 if __name__ == "__main__":

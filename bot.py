@@ -119,12 +119,14 @@ def build_application():
         .post_shutdown(post_shutdown)
         .build()
     )
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("done", handle_command))
     app.add_handler(MessageHandler(
-        filters.Regex(r"^/រួចរាល់(?:@\w+)?$"),
+        filters.Regex(
+            r"^\s*(?:✅\ufe0f?\s*)?/(?:done|រួចរាល់)(?:@\w+)?\s*$"
+        ),
         handle_command,
     ))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("done", handle_command))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(
