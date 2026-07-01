@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+import logging
 from urllib.parse import quote
 from urllib.parse import urlparse
 
@@ -134,6 +135,15 @@ Please choose a menu below:
 • New Stock / Featured / Promotion
 """,
 }
+
+LOGGER = logging.getLogger(__name__)
+
+MANAGE_STOCK_CALLBACK_PREFIXES = (
+    "admin:stock:", "admin:quick:", "admin:quick_field:",
+    "admin:quick_status:", "admin:quick_set_status:", "admin:edit:",
+    "admin:edit_field:", "admin:delete:", "admin:delete_confirm:",
+    "admin:set_status:", "admin:flag:", "admin:photo_",
+)
 
 WIZARD_STEPS = (
     "followers", "price", "audience", "country", "page_type", "female_percent",
@@ -697,6 +707,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     language = get_user_language(uid)
 
+    if (
+        data == "admin:manage"
+        or data.startswith(MANAGE_STOCK_CALLBACK_PREFIXES)
+        or (
+            data == "global:cancel"
+            and context.user_data.get("admin_workflow") == "manage_stock"
+        )
+    ):
+        LOGGER.info(
+            "Manage Stock callback admin_id=%s callback=%s",
+            uid, data,
+        )
+
     if data == "global:cancel":
         clear_photo_upload_session(uid)
         context.user_data.clear()
@@ -1020,7 +1043,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("advanced:quality:"):
         quality = int(data.rsplit(":", 1)[1])
-        rows = search_stocks("quality", value=quality)
+        rows = [
+            row for row in search_stocks("quality", value=quality)
+            if row[6] == "available"
+        ]
         await query.edit_message_text(
             f"⭐ Quality {quality}% · {len(rows)} stock(s)",
             reply_markup=stocks_list(rows, language=language),
@@ -1029,7 +1055,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("advanced:status:"):
         status = data.rsplit(":", 1)[1]
-        rows = search_stocks("status", value=status)
+        rows = [
+            row for row in search_stocks("status", value=status)
+            if row[6] == "available"
+        ]
         await query.edit_message_text(
             f"{'🟢' if status == 'available' else '🔴'} "
             f"{status.title()} · {len(rows)} stock(s)",
@@ -1749,7 +1778,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_type = context.user_data["advanced_search"]
         text = (update.message.text or "").strip()
         if search_type == "country":
-            rows = search_stocks("country", value=text)
+            rows = [
+                row for row in search_stocks("country", value=text)
+                if row[6] == "available"
+            ]
             label = f"🌍 {text}"
         else:
             cleaned = text.replace("$", "").replace(",", "").replace(" ", "")
@@ -1763,7 +1795,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Invalid range. Use format: 10-100"
                 )
                 return
-            rows = search_stocks("price", minimum=minimum, maximum=maximum)
+            rows = [
+                row for row in search_stocks(
+                    "price", minimum=minimum, maximum=maximum
+                )
+                if row[6] == "available"
+            ]
             label = f"💰 {minimum:g}–{maximum:g}"
         context.user_data.clear()
         await update.message.reply_text(

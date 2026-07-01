@@ -52,6 +52,7 @@ from handlers.orders import (
     format_order,
     handle_admin_order_callback,
     handle_customer_order_callback,
+    handle_order_message,
     order_manager_detail_keyboard,
     order_manager_menu,
     order_status_menu,
@@ -2642,12 +2643,117 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(orders), 1)
                 self.assertEqual(orders[0][5], "waiting_payment")
                 self.assertIn(
-                    f"Order #{orders[0][0]}",
+                    f"លេខបញ្ជាទិញ #{orders[0][0]}",
                     message.reply_text.await_args.args[0],
                 )
                 self.assertIn(
-                    "Payment QR is not configured",
+                    "មិនទាន់បានកំណត់ Payment QR",
                     message.reply_text.await_args.args[0],
+                )
+                self.assertIn(
+                    "សូមទូទាត់តាម Bakong QR",
+                    message.reply_text.await_args.args[0],
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_receipt_auto_approves_and_hides_sold_stock(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "receipt-auto-approve.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$10", "100%", "Auto approve",
+                    "https://facebook.com/auto", "available",
+                    featured=1, promotion=1,
+                )
+                user_id = 900
+                db.upsert_customer_profile(
+                    user_id, "sarin1515hsaron", "Sarin", "Customer"
+                )
+                db.toggle_favorite(user_id, stock_id)
+                order_id = db.create_order(
+                    stock_id, user_id, "sarin1515hsaron", "$10"
+                )
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_receipt", {"waiting_payment"}, user_id
+                ))
+                message = SimpleNamespace(
+                    text=None,
+                    photo=[SimpleNamespace(file_id="receipt-auto")],
+                    reply_text=AsyncMock(),
+                )
+                update = SimpleNamespace(
+                    effective_user=SimpleNamespace(
+                        id=user_id,
+                        username="sarin1515hsaron",
+                        full_name="Sarin Customer",
+                        first_name="Sarin",
+                        last_name="Customer",
+                    ),
+                    message=message,
+                )
+                context = SimpleNamespace(
+                    user_data={"order_mode": "receipt", "order_id": order_id},
+                    bot=SimpleNamespace(
+                        send_photo=AsyncMock(), send_message=AsyncMock()
+                    ),
+                )
+
+                self.assertTrue(await handle_order_message(update, context))
+                self.assertEqual(context.user_data, {})
+                self.assertIn(
+                    "✅ Payment approved by @sarin1515hsaron",
+                    message.reply_text.await_args.args[0],
+                )
+                self.assertEqual(db.get_order(order_id)[5], "payment_received")
+                stock = db.get_stock(stock_id)
+                self.assertEqual(stock[8:11], ("sold", 0, 0))
+                self.assertIsNotNone(db.get_order(order_id))
+                self.assertEqual(len(db.get_payment_logs(order_id)), 1)
+
+                self.assertNotIn(
+                    stock_id, {row[0] for row in db.get_stocks_by_range(1, 20)}
+                )
+                self.assertNotIn(
+                    stock_id, {row[0] for row in db.search_by_followers(10)}
+                )
+                search_message = SimpleNamespace(
+                    text="Cambodia", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=901),
+                        message=search_message,
+                    ),
+                    SimpleNamespace(
+                        user_data={"advanced_search": "country"},
+                        chat_data={},
+                    ),
+                )
+                search_callbacks = {
+                    button.callback_data
+                    for row in search_message.reply_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                    for button in row
+                }
+                self.assertNotIn(f"stock:{stock_id}", search_callbacks)
+                self.assertNotIn(
+                    stock_id, {row[0] for row in db.get_special("promotion")}
+                )
+                self.assertNotIn(
+                    stock_id, {row[0] for row in db.get_special("featured")}
+                )
+                self.assertNotIn(
+                    stock_id, {row[0] for row in db.get_new()}
+                )
+                self.assertNotIn(
+                    stock_id, {row[0] for row in db.get_trending_stocks()}
+                )
+                self.assertNotIn(
+                    stock_id, {row[0] for row in db.get_favorite_stocks(user_id)}
                 )
             finally:
                 db.DB_PATH = old_path

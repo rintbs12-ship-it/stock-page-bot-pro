@@ -1220,7 +1220,7 @@ def get_stocks_by_range(start_k, end_k):
     cur.execute("""
         SELECT id, followers, country, audience, price, quality, status
         FROM stocks
-        WHERE followers BETWEEN ? AND ?
+        WHERE status='available' AND followers BETWEEN ? AND ?
         ORDER BY followers ASC, id DESC
     """, (start_k, end_k))
     rows = cur.fetchall()
@@ -1429,7 +1429,7 @@ def get_favorite_stocks(user_id):
         SELECT s.id, s.followers, s.country, s.audience, s.price, s.quality, s.status
         FROM favorites f
         JOIN stocks s ON s.id=f.stock_id
-        WHERE f.user_id=?
+        WHERE f.user_id=? AND s.status='available'
         ORDER BY f.created_at DESC, s.id DESC
     """, (user_id,))
     rows = cur.fetchall()
@@ -1552,6 +1552,7 @@ def get_trending_stocks(limit=10):
                COALESCE(a.views, 0), COALESCE(a.buy_clicks, 0)
         FROM stocks s
         LEFT JOIN stock_analytics a ON a.stock_id=s.id
+        WHERE s.status='available'
         ORDER BY COALESCE(a.views, 0) DESC, COALESCE(a.buy_clicks, 0) DESC, s.id DESC
         LIMIT ?
     """, (limit,))
@@ -1848,6 +1849,50 @@ def verify_payment(order_id, admin_id, action, reason=""):
     con.commit()
     con.close()
     return changed
+
+
+def auto_approve_uploaded_receipt(order_id, customer_id):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    cur = con.cursor()
+    order = cur.execute("""
+        SELECT stock_id, receipt_file_id
+        FROM orders
+        WHERE order_id=? AND customer_id=? AND status='waiting_admin_confirm'
+    """, (order_id, customer_id)).fetchone()
+    if not order:
+        con.close()
+        return False
+    stock_id, receipt_file_id = order
+    cur.execute("""
+        UPDATE orders
+        SET status='payment_received', payment_at=CASE
+                WHEN payment_at='' THEN ? ELSE payment_at END,
+            rejection_reason='', updated_at=?
+        WHERE order_id=? AND customer_id=? AND status='waiting_admin_confirm'
+    """, (now, now, order_id, customer_id))
+    if cur.rowcount == 0:
+        con.close()
+        return False
+    cur.execute("""
+        UPDATE stocks
+        SET status='sold', featured=0, promotion=0
+        WHERE id=?
+    """, (stock_id,))
+    cur.execute("""
+        INSERT INTO payment_logs (
+            order_id, admin_id, action, reason,
+            receipt_file_id, created_at
+        ) VALUES (?, ?, 'approved', 'Automatic receipt approval', ?, ?)
+    """, (order_id, customer_id, receipt_file_id or "", now))
+    cur.execute("""
+        INSERT INTO order_status_history (
+            order_id, status, changed_by, note, created_at
+        ) VALUES (?, 'payment_received', ?, 'Payment auto-approved', ?)
+    """, (order_id, str(customer_id), now))
+    con.commit()
+    con.close()
+    return True
 
 
 def get_order_receipts(order_id):
@@ -2464,7 +2509,7 @@ def search_by_followers(k):
     cur.execute("""
         SELECT id, followers, country, audience, price, quality, status
         FROM stocks
-        WHERE followers=?
+        WHERE status='available' AND followers=?
         ORDER BY id DESC
     """, (k,))
     rows = cur.fetchall()
@@ -2523,7 +2568,7 @@ def get_special(kind):
     cur.execute(f"""
         SELECT id, followers, country, audience, price, quality, status
         FROM stocks
-        WHERE {field}=1
+        WHERE status='available' AND {field}=1
         ORDER BY id DESC
     """)
     rows = cur.fetchall()
@@ -2537,6 +2582,7 @@ def get_new(limit=20):
     cur.execute("""
         SELECT id, followers, country, audience, price, quality, status
         FROM stocks
+        WHERE status='available'
         ORDER BY id DESC LIMIT ?
     """, (limit,))
     rows = cur.fetchall()

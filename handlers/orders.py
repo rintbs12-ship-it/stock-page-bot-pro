@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 from database.db import (
     add_audit_log,
+    auto_approve_uploaded_receipt,
     create_order,
     get_customer_action_order,
     get_customer_profile,
@@ -514,12 +515,12 @@ async def start_order(query, context, stock_id):
             ]]),
         )
     text = (
-        "💳 Payment\n\n"
-        f"Order #{order_id}\n"
-        f"Stock #{stock_id}\n"
-        f"Amount: {stock[4]}\n\n"
-        "Please pay via Bakong QR.\n"
-        "Then upload your payment receipt."
+        "💳 ការទូទាត់\n\n"
+        f"លេខបញ្ជាទិញ #{order_id}\n"
+        f"ស្តុក #{stock_id}\n"
+        f"ចំនួនទឹកប្រាក់៖ {stock[4]}\n\n"
+        "សូមទូទាត់តាម Bakong QR។\n"
+        "បន្ទាប់មក សូមផ្ញើរូបបង្កាន់ដៃទូទាត់របស់អ្នក។"
     )
     qr_file_id = get_setting("payment_qr_file_id", "")
     if qr_file_id:
@@ -530,7 +531,7 @@ async def start_order(query, context, stock_id):
         )
     else:
         await query.message.reply_text(
-            text + "\n\nPayment QR is not configured. Please contact admin.",
+            text + "\n\nមិនទាន់បានកំណត់ Payment QR ទេ។ សូមទាក់ទង Admin។",
             reply_markup=payment_buttons(order_id),
         )
 
@@ -1248,23 +1249,45 @@ async def handle_order_message(update, context):
             context.user_data.clear()
             await update.message.reply_text("Receipt session expired.")
             return True
+        if not auto_approve_uploaded_receipt(order_id, user_id):
+            context.user_data.clear()
+            await update.message.reply_text(
+                "Receipt was saved, but automatic approval failed. "
+                "Please contact Admin."
+            )
+            return True
         context.user_data.clear()
-        await update.message.reply_text(
-            "✅ Receipt uploaded. Please wait for Admin confirmation."
+        username = getattr(update.effective_user, "username", "") or ""
+        full_name = getattr(update.effective_user, "full_name", "") or ""
+        if not full_name:
+            full_name = " ".join(filter(None, (
+                getattr(update.effective_user, "first_name", "") or "",
+                getattr(update.effective_user, "last_name", "") or "",
+            ))).strip()
+        customer_label = (
+            f"@{username}" if username else full_name or str(user_id)
         )
-        username = f"@{order[3]}" if order[3] else str(user_id)
+        await update.message.reply_text(
+            f"✅ Payment approved by {customer_label}\n\n"
+            "សូមផ្ញើ Facebook account link របស់អ្នក។"
+        )
         profile = get_customer_profile(user_id)
         vip_label = "\n⭐ VIP Customer" if profile and profile[11] else ""
         await _send_to_admins(
             context,
-            "🧾 Payment Receipt Review\n\n"
+            "✅ Payment Automatically Approved\n\n"
             f"Order ID: {order_id}\n"
             f"Stock ID: {order[1]}\n"
-            f"Customer: {username}\n"
+            f"Customer: {customer_label}\n"
             f"Telegram ID: {user_id}\n"
             f"Amount: {order[4]}\n"
-            f"Status: Waiting Admin Confirm{vip_label}",
-            reply_markup=admin_receipt_buttons(order_id, order[1], user_id),
+            f"Status: Payment Received{vip_label}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "📦 View Order",
+                    callback_data=f"admin:order_manager_view:{order_id}",
+                ),
+            ]]),
             photo=receipt_file_id,
         )
         return True
