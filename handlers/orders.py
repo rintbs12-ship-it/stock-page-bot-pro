@@ -173,17 +173,20 @@ def admin_processing_buttons(order_id, customer_id):
     ])
 
 
-def customer_accept_buttons(order_id):
+def customer_accept_buttons(order_id, back_callback=None):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
-            "✅ I Accepted",
+            "✅ ខ្ញុំបានទទួលរួច",
             callback_data=f"order:accepted:{order_id}",
         )],
         [InlineKeyboardButton(
-            "🆘 Need Help",
+            "🆘 ត្រូវការជំនួយ",
             callback_data=f"order:help:{order_id}",
         )],
-        [InlineKeyboardButton("⬅ Back", callback_data=f"order:view:{order_id}")],
+        [InlineKeyboardButton(
+            "⬅️ ត្រឡប់ក្រោយ",
+            callback_data=back_callback or f"order:view:{order_id}",
+        )],
     ])
 
 
@@ -653,6 +656,19 @@ async def handle_customer_order_callback(query, context):
         await query.message.reply_text("✅ Order cancelled.")
         return order[1]
 
+    if data.startswith("order:invite:"):
+        if order[5] not in {"admin_added", "waiting_customer_accept"}:
+            await query.message.reply_text(
+                "សកម្មភាពនេះមិនអាចប្រើបានទៀតទេ។"
+            )
+            return
+        await query.edit_message_text(
+            "🎉 Admin ត្រូវបានបន្ថែមចូលក្នុង Page របស់អ្នករួចហើយ។\n\n"
+            "សូមបើក Facebook ហើយទទួលយកការអញ្ជើញ (Page Invite)។",
+            reply_markup=customer_accept_buttons(order_id),
+        )
+        return
+
     if data.startswith("order:accepted:"):
         changed = transition_order(
             order_id,
@@ -663,7 +679,9 @@ async def handle_customer_order_callback(query, context):
             note="Customer accepted page invite",
         )
         if not changed:
-            await query.message.reply_text("This action is unavailable.")
+            await query.message.reply_text(
+                "សកម្មភាពនេះមិនអាចប្រើបានទៀតទេ។"
+            )
             return
         transition_order(
             order_id,
@@ -674,7 +692,7 @@ async def handle_customer_order_callback(query, context):
             note="Waiting for customer removal confirmation",
         )
         await query.edit_message_text(
-            '🧹 If everything is OK,\npress "Remove Admin".',
+            "🧹 ប្រសិនបើអ្វីៗត្រឹមត្រូវ សូមចុចដក Admin ចេញ។",
             reply_markup=customer_remove_admin_button(order_id),
         )
         await _send_to_admins(
@@ -686,16 +704,31 @@ async def handle_customer_order_callback(query, context):
         return
 
     if data.startswith("order:help:"):
-        await query.message.reply_text(
-            f"🆘 Help requested for Order #{order_id}.\nAdmin has been notified."
+        if order[5] not in {"admin_added", "waiting_customer_accept"}:
+            await query.message.reply_text(
+                "សកម្មភាពនេះមិនអាចប្រើបានទៀតទេ។"
+            )
+            return
+        await query.edit_message_text(
+            f"🆘 ជំនួយសម្រាប់ការកម្មង់ #{order_id}\n\n"
+            "1. សូមបើក Facebook របស់អ្នក។\n"
+            "2. ចូលទៅកាន់ Notifications ឬ Page Invites។\n"
+            "3. ទទួលយកការអញ្ជើញចូល Page។\n\n"
+            "បើនៅតែមានបញ្ហា Admin បានទទួលការជូនដំណឹងរួចហើយ។",
+            reply_markup=customer_accept_buttons(
+                order_id, back_callback=f"order:invite:{order_id}"
+            ),
         )
         await _send_to_admins(
             context,
-            f"🆘 Customer needs help\n\nOrder #{order_id}",
+            f"🆘 អតិថិជនត្រូវការជំនួយ\n\nការកម្មង់ #{order_id}",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("💬 Contact Customer", url=f"tg://user?id={user_id}")
+                InlineKeyboardButton(
+                    "💬 ទាក់ទងអតិថិជន", url=f"tg://user?id={user_id}"
+                )
             ]]),
         )
+        return
 
 
 async def handle_admin_order_callback(query, context):

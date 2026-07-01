@@ -2841,6 +2841,112 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 db.DB_PATH = old_path
 
+    async def test_page_invite_accept_help_back_and_cancel_flow(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "page-invite-flow.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$25", "100%", "",
+                    "https://facebook.com/page", "sold",
+                )
+                user_id = 900
+                order_id = db.create_order(stock_id, user_id, "buyer", "$25")
+                self.assertTrue(db.transition_order(
+                    order_id, "payment_confirmed", {"waiting_payment"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "admin_processing", {"payment_confirmed"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "admin_added", {"admin_processing"}
+                ))
+                self.assertTrue(db.transition_order(
+                    order_id, "waiting_customer_accept", {"admin_added"}
+                ))
+                context = SimpleNamespace(
+                    user_data={"order_flow": "page_invite"},
+                    chat_data={"order_flow": "page_invite"},
+                    bot=SimpleNamespace(send_message=AsyncMock()),
+                )
+
+                help_query = self._wizard_query(f"order:help:{order_id}")
+                help_query.from_user = SimpleNamespace(
+                    id=user_id, username="buyer",
+                    first_name="Buyer", last_name="",
+                )
+                self.assertIsNone(await handle_customer_order_callback(
+                    help_query, context
+                ))
+                self.assertIn(
+                    "ជំនួយសម្រាប់ការកម្មង់",
+                    help_query.edit_message_text.await_args.args[0],
+                )
+                help_callbacks = {
+                    button.callback_data
+                    for row in help_query.edit_message_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                    for button in row
+                }
+                self.assertTrue({
+                    f"order:accepted:{order_id}",
+                    f"order:help:{order_id}",
+                    f"order:invite:{order_id}",
+                    "global:cancel",
+                }.issubset(help_callbacks))
+
+                invite_query = self._wizard_query(f"order:invite:{order_id}")
+                invite_query.from_user = help_query.from_user
+                self.assertIsNone(await handle_customer_order_callback(
+                    invite_query, context
+                ))
+                self.assertIn(
+                    "Page Invite",
+                    invite_query.edit_message_text.await_args.args[0],
+                )
+                invite_callbacks = {
+                    button.callback_data
+                    for row in invite_query.edit_message_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                    for button in row
+                }
+                self.assertIn(f"order:view:{order_id}", invite_callbacks)
+                self.assertIn("global:cancel", invite_callbacks)
+
+                accepted_query = self._wizard_query(
+                    f"order:accepted:{order_id}"
+                )
+                accepted_query.from_user = help_query.from_user
+                self.assertIsNone(await handle_customer_order_callback(
+                    accepted_query, context
+                ))
+                self.assertEqual(
+                    db.get_order(order_id)[5], "waiting_remove_admin"
+                )
+                self.assertIn(
+                    "សូមចុចដក Admin",
+                    accepted_query.edit_message_text.await_args.args[0],
+                )
+
+                cancel_context = SimpleNamespace(
+                    user_data={"order_flow": "page_invite"},
+                    chat_data={"order_flow": "page_invite"},
+                )
+                cancel_query = self._wizard_query("global:cancel")
+                cancel_query.from_user = help_query.from_user
+                result = await handle_callback(
+                    SimpleNamespace(callback_query=cancel_query),
+                    cancel_context,
+                )
+                self.assertEqual(result, -1)
+                self.assertEqual(cancel_context.user_data, {})
+                self.assertEqual(cancel_context.chat_data, {})
+            finally:
+                db.DB_PATH = old_path
+
     async def test_health_server_returns_ok_and_404(self):
         server = await start_health_server(host="127.0.0.1", port=0)
         port = server.sockets[0].getsockname()[1]
