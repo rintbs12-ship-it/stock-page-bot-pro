@@ -758,46 +758,89 @@ def build_stock_report(stats, report_date=None):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    remove_wizard_keyboard = (
-        context.user_data.get("admin_mode") == "create"
-        and context.user_data.get("admin_step") == "page_type"
+    user = update.effective_user
+    uid = user.id
+    message = getattr(update, "effective_message", None) or update.message
+    LOGGER.info(
+        "/start received: user_id=%s user_data_keys=%s chat_data_keys=%s",
+        uid,
+        list(context.user_data),
+        list(getattr(context, "chat_data", {}) or {}),
     )
-    clear_photo_upload_session(uid)
-    _clear_wizard_state(context)
+    context.user_data.clear()
     chat_data = getattr(context, "chat_data", None)
     if chat_data is not None:
         chat_data.clear()
-    user = update.effective_user
-    upsert_customer_profile(
-        uid,
-        getattr(user, "username", "") or "",
-        getattr(user, "first_name", "") or "",
-        getattr(user, "last_name", "") or "",
-    )
-    language = get_user_language(uid)
-    await update.message.reply_text(
-        "ចុច 🚀 /start ដើម្បីត្រឡប់ទៅម៉ឺនុយដើមបានគ្រប់ពេល។",
-        reply_markup=start_reply_keyboard(),
-    )
-    if remove_wizard_keyboard:
-        await update.message.reply_text(
-            "Add Stock wizard closed.",
-            reply_markup=ReplyKeyboardRemove(),
+    try:
+        clear_photo_upload_session(uid)
+    except Exception:
+        LOGGER.exception(
+            "/start could not clear pending upload state: user_id=%s", uid
         )
-    logo_file_id = get_setting("bot_logo_file_id", "")
-    if logo_file_id:
-        await update.message.reply_photo(
-            photo=logo_file_id,
-            caption=(
-                f"{get_setting('theme_welcome_emoji', '📦')} "
-                f"{get_setting('theme_store_title', get_setting('store_name', 'RS SERVICE'))}"
-            ),
+    try:
+        upsert_customer_profile(
+            uid,
+            getattr(user, "username", "") or "",
+            getattr(user, "first_name", "") or "",
+            getattr(user, "last_name", "") or "",
         )
-    await update.message.reply_text(
-        get_welcome_text(language),
-        reply_markup=main_menu(is_admin(uid), language),
-    )
+    except Exception:
+        LOGGER.exception(
+            "/start could not update customer profile: user_id=%s", uid
+        )
+    try:
+        language = get_user_language(uid)
+    except Exception:
+        LOGGER.exception(
+            "/start could not load language; using Khmer: user_id=%s", uid
+        )
+        language = "km"
+    try:
+        admin = is_admin(uid)
+    except Exception:
+        LOGGER.exception(
+            "/start could not load admin status: user_id=%s", uid
+        )
+        admin = False
+    try:
+        menu_markup = main_menu(admin, language)
+        welcome_text = get_welcome_text(language)
+        await message.reply_text(
+            "ចុច 🚀 /start ដើម្បីត្រឡប់ទៅម៉ឺនុយដើមបានគ្រប់ពេល។",
+            reply_markup=start_reply_keyboard(),
+        )
+        try:
+            logo_file_id = get_setting("bot_logo_file_id", "")
+            if logo_file_id:
+                await message.reply_photo(
+                    photo=logo_file_id,
+                    caption=(
+                        f"{get_setting('theme_welcome_emoji', '📦')} "
+                        f"{get_setting('theme_store_title', get_setting('store_name', 'RS SERVICE'))}"
+                    ),
+                )
+        except Exception:
+            LOGGER.exception(
+                "/start logo send failed; continuing to main menu: user_id=%s",
+                uid,
+            )
+        await message.reply_text(welcome_text, reply_markup=menu_markup)
+        LOGGER.info("/start main menu sent: user_id=%s", uid)
+    except Exception:
+        LOGGER.exception("/start failed: user_id=%s", uid)
+        try:
+            fallback_markup = main_menu(admin, "km")
+        except Exception:
+            fallback_markup = start_reply_keyboard()
+        try:
+            await message.reply_text(
+                "⚠️ មានបញ្ហាបន្តិច សូមសាកល្បងម្ដងទៀត។",
+                reply_markup=fallback_markup,
+            )
+        except Exception:
+            LOGGER.exception(
+                "/start fallback send failed: user_id=%s", uid
+            )
     return ConversationHandler.END
 
 

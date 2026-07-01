@@ -70,6 +70,27 @@ async def track_and_guard_user(update: Update, context):
     raise ApplicationHandlerStop
 
 
+async def global_start(update: Update, context):
+    user = update.effective_user
+    if user:
+        try:
+            track_telegram_user(
+                user.id,
+                getattr(user, "username", "") or "",
+                getattr(user, "first_name", "") or "",
+                getattr(user, "last_name", "") or "",
+                getattr(user, "language_code", "") or "",
+                is_admin=is_admin_user(user.id),
+                count_message=True,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Could not track /start user %s", user.id
+            )
+    await start(update, context)
+    raise ApplicationHandlerStop
+
+
 async def handle_error(update, context):
     error = context.error
     reference = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -162,6 +183,7 @@ def build_application():
         .post_shutdown(post_shutdown)
         .build()
     )
+    app.add_handler(CommandHandler("start", global_start), group=-100)
     app.add_handler(TypeHandler(Update, track_and_guard_user), group=-1)
     app.add_handler(MessageHandler(
         filters.Regex(
@@ -169,7 +191,6 @@ def build_application():
         ),
         handle_command,
     ))
-    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("done", handle_command))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(handle_callback))

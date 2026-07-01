@@ -2563,6 +2563,170 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 db.DB_PATH = old_path
 
+    async def test_start_is_global_across_all_active_and_finished_flows(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "global-start.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "All", "$50", "100%", "",
+                    "https://facebook.com/global-start", "available",
+                )
+                order_id = db.create_order(
+                    stock_id, 700002, "flow_user", "$50"
+                )
+                states = (
+                    (
+                        "photo upload",
+                        {
+                            "admin_mode": "upload_photos",
+                            "admin_step": "photo",
+                            "last_stock_id": stock_id,
+                            "waiting_for_photos": True,
+                        },
+                    ),
+                    (
+                        "add stock",
+                        {
+                            "admin_mode": "create",
+                            "admin_step": "price",
+                            "draft": {"followers": 10},
+                        },
+                    ),
+                    (
+                        "order",
+                        {"order_mode": "customer_info", "order_id": order_id},
+                    ),
+                    (
+                        "payment",
+                        {"order_mode": "receipt", "order_id": order_id},
+                    ),
+                    ("after cancel", {}),
+                    ("after completed", {"completed_flow": True}),
+                )
+                for name, user_data in states:
+                    with self.subTest(flow=name):
+                        if name == "photo upload":
+                            db.set_photo_upload_session(
+                                619658883, stock_id
+                            )
+                        context = SimpleNamespace(
+                            user_data=dict(user_data),
+                            chat_data={
+                                "flow": name,
+                                "waiting_for_photos": True,
+                            },
+                        )
+                        message = SimpleNamespace(
+                            reply_text=AsyncMock(),
+                            reply_photo=AsyncMock(),
+                        )
+                        result = await start(
+                            SimpleNamespace(
+                                effective_user=SimpleNamespace(
+                                    id=619658883,
+                                    username="owner",
+                                    first_name="Owner",
+                                    last_name="",
+                                ),
+                                message=message,
+                            ),
+                            context,
+                        )
+                        self.assertEqual(result, ConversationHandler.END)
+                        self.assertEqual(context.user_data, {})
+                        self.assertEqual(context.chat_data, {})
+                        self.assertIsNone(
+                            db.get_photo_upload_session(619658883)
+                        )
+                        self.assertTrue(
+                            message.reply_text.await_args.kwargs[
+                                "reply_markup"
+                            ].inline_keyboard
+                        )
+                self.assertIsNotNone(db.get_order(order_id))
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_global_start_priority_and_khmer_fallback(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "start-priority.db")
+            try:
+                db.init_db()
+                with patch.object(bot, "BOT_TOKEN", "123456:ABCDEF"):
+                    app = bot.build_application()
+                start_handler = app.handlers[-100][0]
+                self.assertIs(start_handler.callback, bot.global_start)
+                self.assertFalse(any(
+                    handler.callback is start
+                    for handler in app.handlers[0]
+                ))
+
+                context = SimpleNamespace(
+                    user_data={"order_mode": "receipt"},
+                    chat_data={"payment": True},
+                )
+                message = SimpleNamespace(
+                    reply_text=AsyncMock(),
+                    reply_photo=AsyncMock(),
+                )
+                update = SimpleNamespace(
+                    effective_user=SimpleNamespace(
+                        id=700003,
+                        username="fallback",
+                        first_name="Fallback",
+                        last_name="",
+                        language_code="km",
+                    ),
+                    message=message,
+                )
+                with (
+                    patch(
+                        "handlers.menu.get_welcome_text",
+                        side_effect=RuntimeError("theme unavailable"),
+                    ),
+                    self.assertLogs("handlers.menu", level="INFO") as logs,
+                ):
+                    result = await start(update, context)
+                self.assertEqual(result, ConversationHandler.END)
+                self.assertEqual(
+                    message.reply_text.await_args.args[0],
+                    "⚠️ មានបញ្ហាបន្តិច សូមសាកល្បងម្ដងទៀត។",
+                )
+                self.assertTrue(any(
+                    "/start received" in entry for entry in logs.output
+                ))
+
+                db.track_telegram_user(
+                    700003, "fallback", "Fallback", language_code="km"
+                )
+                db.set_telegram_user_status(700003, "blocked")
+                global_message = SimpleNamespace(
+                    reply_text=AsyncMock(),
+                    reply_photo=AsyncMock(),
+                )
+                global_update = SimpleNamespace(
+                    effective_user=update.effective_user,
+                    message=global_message,
+                )
+                with self.assertRaises(ApplicationHandlerStop):
+                    await bot.global_start(
+                        global_update,
+                        SimpleNamespace(
+                            user_data={"order_mode": "receipt"},
+                            chat_data={"payment": True},
+                        ),
+                    )
+                self.assertTrue(
+                    global_message.reply_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                )
+            finally:
+                db.DB_PATH = old_path
+
     async def test_invalid_add_stock_state_recovers_to_main_menu(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:
