@@ -16,6 +16,7 @@ from handlers.backup import run_due_auto_backup
 from handlers.notifications import notification_scheduler
 from handlers.scheduler import task_scheduler
 from health import start_health_server
+from khmer_bot import KhmerExtBot
 from handlers.menu import cancel, start, handle_callback, handle_text, handle_command
 from version import PRODUCT_NAME, __version__
 
@@ -105,9 +106,10 @@ async def post_shutdown(app):
 
 
 def build_application():
+    telegram_bot = KhmerExtBot(token=BOT_TOKEN)
     app = (
         Application.builder()
-        .token(BOT_TOKEN)
+        .bot(telegram_bot)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()

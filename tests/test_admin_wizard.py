@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from telegram.error import Forbidden, TelegramError
 
 import bot
+from localization import translate_reply_markup, translate_ui_text
 from database import db
 from handlers import backup
 from handlers import settings
@@ -82,6 +83,7 @@ from handlers.menu import (
 )
 from keyboards.buttons import (
     admin_home,
+    admin_stock_actions,
     country_choices,
     main_menu,
     photo_manager_menu,
@@ -95,6 +97,30 @@ from health import start_health_server
 
 
 class AdminWizardTests(unittest.TestCase):
+    def test_global_khmer_ui_translation_preserves_callbacks_and_emojis(self):
+        translated = translate_ui_text(
+            "✅ Information saved. Admin is processing your order."
+        )
+        self.assertTrue(translated.startswith("✅"))
+        self.assertIn("ព័ត៌មានត្រូវបានរក្សាទុករួចរាល់", translated)
+        markup = admin_stock_actions(42)
+        translated_markup = translate_reply_markup(markup)
+        original_callbacks = [
+            button.callback_data
+            for row in markup.inline_keyboard for button in row
+        ]
+        translated_callbacks = [
+            button.callback_data
+            for row in translated_markup.inline_keyboard for button in row
+        ]
+        self.assertEqual(translated_callbacks, original_callbacks)
+        translated_labels = {
+            button.text
+            for row in translated_markup.inline_keyboard for button in row
+        }
+        self.assertIn("❌ បោះបង់", translated_labels)
+        self.assertTrue(any("ប្រូម៉ូសិន" in label for label in translated_labels))
+
     def test_production_main_provides_ptb_22_current_event_loop(self):
         app = SimpleNamespace(run_polling=Mock(), bot_data={})
         socket = SimpleNamespace(getsockname=Mock(return_value=("0.0.0.0", 10000)))
