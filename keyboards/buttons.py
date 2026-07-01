@@ -320,7 +320,31 @@ def statistics_dashboard_menu():
     ])
 
 
-def admin_stock_actions(stock_id):
+def admin_stock_actions(stock_id, status="available"):
+    if status == "sold":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "♻️ Restore Available",
+                callback_data=f"admin:set_status:{stock_id}:available",
+            )],
+            [InlineKeyboardButton(
+                "🗑️ Delete", callback_data=f"admin:delete:{stock_id}"
+            )],
+            [InlineKeyboardButton(
+                "📜 View Order History",
+                callback_data=f"admin:stock_orders:{stock_id}",
+            )],
+            [InlineKeyboardButton(
+                "🖼️ Photos",
+                callback_data=f"admin:photo_manager:{stock_id}",
+            )],
+            [InlineKeyboardButton(
+                "⬅️ Manage Stock", callback_data="admin:manage"
+            )],
+            [InlineKeyboardButton(
+                "❌ Cancel", callback_data="global:cancel"
+            )],
+        ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Quick Edit", callback_data=f"admin:quick:{stock_id}")],
         [InlineKeyboardButton("✏️ Edit Stock", callback_data=f"admin:edit:{stock_id}"),

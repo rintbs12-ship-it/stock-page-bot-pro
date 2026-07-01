@@ -2540,6 +2540,19 @@ def get_customer_orders(customer_id, limit=20):
     return rows
 
 
+def get_stock_orders(stock_id, limit=100):
+    con = connect()
+    rows = con.execute("""
+        SELECT order_id, stock_id, customer_id, customer_username, price,
+               status, facebook_profile_link, requested_page_name,
+               receipt_file_id, created_at, updated_at
+        FROM orders WHERE stock_id=?
+        ORDER BY order_id DESC LIMIT ?
+    """, (int(stock_id), int(limit))).fetchall()
+    con.close()
+    return rows
+
+
 def get_customer_action_order(customer_id):
     con = connect()
     cur = con.cursor()

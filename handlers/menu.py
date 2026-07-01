@@ -101,6 +101,7 @@ from database.db import (
     get_photo_upload_session,
     get_special,
     get_stock,
+    get_stock_orders,
     get_stock_photo_page,
     get_stock_photo_records,
     get_stock_photos,
@@ -156,7 +157,7 @@ MANAGE_STOCK_CALLBACK_PREFIXES = (
     "admin:quick_status:", "admin:quick_set_status:", "admin:edit:",
     "admin:edit_field:", "admin:delete:", "admin:delete_confirm:",
     "admin:set_status:", "admin:flag:", "admin:photo_",
-    "admin:edit_price_mode:",
+    "admin:edit_price_mode:", "admin:stock_orders:",
 )
 
 WIZARD_STEPS = (
@@ -525,7 +526,9 @@ def admin_stock_text(row) -> str:
         fb_link, status, featured, promotion, created_at,
     ) = row[:12]
     page_type = row[21] if len(row) > 21 and row[21] else "Not set"
+    sold = status == "sold"
     return (
+        f"{'🚫 SOLD / លក់រួច' + chr(10) + chr(10) if sold else ''}"
         f"📦 Stock #{stock_id}\n\n"
         f"📂 Page Type : {page_type}\n"
         f"👥 Followers: {followers}K\n"
@@ -533,13 +536,23 @@ def admin_stock_text(row) -> str:
         f"🌍 Country: {country}\n"
         f"👤 Audience: {audience}\n"
         f"⭐ Quality: {quality}\n"
-        f"📌 Status: {status.title()}\n"
+        f"{'🔴 ស្ថានភាព : លក់រួច' if sold else f'📌 Status: {status.title()}'}\n"
         f"⭐ Featured: {'Yes' if featured else 'No'}\n"
         f"🔥 Promotion: {'Yes' if promotion else 'No'}\n"
         f"📷 Photos: {len(get_stock_photos(stock_id))}\n\n"
         f"📝 {description}\n"
         f"🔗 {fb_link}"
     )
+
+
+async def _reject_sold_customer_stock(query, row, user_id, language):
+    if row and row[8] == "sold":
+        await query.edit_message_text(
+            "❌ Stock នេះត្រូវបានលក់រួចហើយ។",
+            reply_markup=main_menu(is_admin(user_id), language),
+        )
+        return True
+    return False
 
 
 def customer_stock_text(row, language):
@@ -996,6 +1009,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_menu(is_admin(uid), language),
             )
             return
+        if await _reject_sold_customer_stock(query, row, uid, language):
+            return
 
         increment_stock_analytics(stock_id, "view")
         sid, fb_link = row[0], row[7]
@@ -1020,6 +1035,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not row:
             await query.edit_message_text("Stock not found.")
             return
+        if await _reject_sold_customer_stock(query, row, uid, language):
+            return
         await query.edit_message_text(
             customer_stock_text(row, language),
             reply_markup=stock_detail(
@@ -1041,9 +1058,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("notify:toggle"):
-        subscribed = toggle_notification_subscription(uid)
         stock_id = int(data.rsplit(":", 1)[1]) if data.count(":") == 2 else None
-        if stock_id and (row := get_stock(stock_id)):
+        row = get_stock(stock_id) if stock_id else None
+        if await _reject_sold_customer_stock(query, row, uid, language):
+            return
+        subscribed = toggle_notification_subscription(uid)
+        if stock_id and row:
             await query.edit_message_text(
                 customer_stock_text(row, language),
                 reply_markup=stock_detail(
@@ -1066,6 +1086,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not row:
             await query.message.reply_text("Stock not found.")
             return
+        if await _reject_sold_customer_stock(query, row, uid, language):
+            return
         increment_stock_analytics(stock_id, "facebook")
         await query.message.reply_text(
             "🌐 Facebook Page",
@@ -1080,6 +1102,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = get_stock(stock_id)
         if not row:
             await query.message.reply_text("Stock not found.")
+            return
+        if await _reject_sold_customer_stock(query, row, uid, language):
             return
         share_text = (
             f"Stock #{row[0]}\nFollowers: {row[1]}K\nPrice: {row[4]}\n"
@@ -1106,6 +1130,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("copylink:"):
         stock_id = int(data.split(":")[1])
         row = get_stock(stock_id)
+        if await _reject_sold_customer_stock(query, row, uid, language):
+            return
         link = row[7] if row else ""
         if row:
             increment_stock_analytics(stock_id, "copy")
@@ -1115,6 +1141,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("photos:"):
         stock_id = int(data.split(":")[1])
+        row = get_stock(stock_id)
+        if await _reject_sold_customer_stock(query, row, uid, language):
+            return
         photos = get_stock_photos(stock_id)
         if not photos:
             message = (
@@ -1136,6 +1165,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("buy:"):
         stock_id = int(data.split(":")[1])
+        row = get_stock(stock_id)
+        if await _reject_sold_customer_stock(query, row, uid, language):
+            return
         increment_stock_analytics(stock_id, "buy")
         await start_order(query, context, stock_id)
         return
@@ -1454,6 +1486,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data.startswith("admin:stock_orders:"):
+        stock_id = int(data.rsplit(":", 1)[1])
+        row = get_stock(stock_id)
+        if not row:
+            await query.edit_message_text(
+                "Stock not found.", reply_markup=admin_home()
+            )
+            return
+        orders = get_stock_orders(stock_id)
+        order_rows = [[InlineKeyboardButton(
+            f"Order #{order[0]} · {order[5]}",
+            callback_data=f"admin:order_view:{order[0]}",
+        )] for order in orders]
+        order_rows.extend([
+            [InlineKeyboardButton(
+                "⬅️ Back", callback_data=f"admin:stock:{stock_id}"
+            )],
+            [InlineKeyboardButton(
+                "❌ Cancel", callback_data="global:cancel"
+            )],
+        ])
+        await query.edit_message_text(
+            f"📜 Stock #{stock_id} Order History\n\n"
+            f"{len(orders)} order(s)",
+            reply_markup=InlineKeyboardMarkup(order_rows),
+        )
+        return
+
     if data.startswith("admin:stock:"):
         stock_id = int(data.rsplit(":", 1)[1])
         row = get_stock(stock_id)
@@ -1462,7 +1522,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await query.edit_message_text(
             admin_stock_text(row),
-            reply_markup=admin_stock_actions(stock_id),
+            reply_markup=admin_stock_actions(stock_id, row[8]),
             disable_web_page_preview=True,
         )
         return
@@ -1529,7 +1589,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"✅ Status changed to {status.title()}.\n\n"
             f"{admin_stock_text(row)}",
-            reply_markup=admin_stock_actions(stock_id),
+            reply_markup=admin_stock_actions(stock_id, row[8]),
             disable_web_page_preview=True,
         )
         return
@@ -1543,6 +1603,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         field, stock_id = parts[2], int(parts[3])
+        row = get_stock(stock_id)
+        if row and row[8] == "sold":
+            await query.edit_message_text(
+                admin_stock_text(row),
+                reply_markup=admin_stock_actions(stock_id, "sold"),
+                disable_web_page_preview=True,
+            )
+            return
         new_value = toggle_stock_flag(stock_id, field)
         if new_value is None:
             await query.edit_message_text(
@@ -1559,7 +1627,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ {field.replace('_', ' ').title()} "
             f"{'enabled' if new_value else 'disabled'}.\n\n"
             f"{admin_stock_text(row)}",
-            reply_markup=admin_stock_actions(stock_id),
+            reply_markup=admin_stock_actions(stock_id, row[8]),
             disable_web_page_preview=True,
         )
         return
@@ -1597,7 +1665,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = get_stock(stock_id)
         await query.edit_message_text(
             admin_stock_text(row),
-            reply_markup=admin_stock_actions(stock_id),
+            reply_markup=admin_stock_actions(stock_id, row[8]),
             disable_web_page_preview=True,
         )
         return
@@ -1651,7 +1719,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = get_stock(stock_id)
         await query.edit_message_text(
             f"✅ Price updated.\n\n{admin_stock_text(row)}",
-            reply_markup=admin_stock_actions(stock_id),
+            reply_markup=admin_stock_actions(stock_id, row[8]),
             disable_web_page_preview=True,
         )
         return
@@ -2217,7 +2285,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"✅ {field.replace('_', ' ').title()} updated.\n\n"
                 f"{admin_stock_text(row)}",
-                reply_markup=admin_stock_actions(stock_id),
+                reply_markup=admin_stock_actions(stock_id, row[8]),
                 disable_web_page_preview=True,
             )
             return
@@ -2260,7 +2328,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"✅ {field.replace('_', ' ').title()} updated.\n\n"
                 f"{admin_stock_text(row)}",
-                reply_markup=admin_stock_actions(stock_id),
+                reply_markup=admin_stock_actions(stock_id, row[8]),
                 disable_web_page_preview=True,
             )
             return

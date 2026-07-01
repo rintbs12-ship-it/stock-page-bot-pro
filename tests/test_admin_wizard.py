@@ -72,6 +72,7 @@ from handlers.menu import (
     WIZARD_PROMPTS,
     WIZARD_STEPS,
     _wizard_keyboard,
+    admin_stock_text,
     begin_photo_upload,
     build_stock_report,
     customer_stock_text,
@@ -1879,6 +1880,105 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(result, -1)
                 self.assertEqual(context.user_data, {})
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_sold_stock_admin_marking_actions_and_customer_guard(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "sold-stock-visibility.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    8, "Cambodia", "All", "$56", "100%", "",
+                    "https://facebook.com/sold", "available",
+                    featured=1, promotion=1,
+                )
+                order_id = db.create_order(
+                    stock_id, 700001, "buyer", "$56"
+                )
+                db.update_stock_field(stock_id, "status", "sold")
+                row = db.get_stock(stock_id)
+
+                detail = admin_stock_text(row)
+                self.assertTrue(detail.startswith("🚫 SOLD / លក់រួច"))
+                self.assertIn("🔴 ស្ថានភាព : លក់រួច", detail)
+
+                sold_markup = admin_stock_actions(stock_id, "sold")
+                sold_callbacks = {
+                    button.callback_data
+                    for markup_row in sold_markup.inline_keyboard
+                    for button in markup_row
+                }
+                self.assertEqual(sold_callbacks, {
+                    f"admin:set_status:{stock_id}:available",
+                    f"admin:delete:{stock_id}",
+                    f"admin:stock_orders:{stock_id}",
+                    f"admin:photo_manager:{stock_id}",
+                    "admin:manage",
+                    "global:cancel",
+                })
+                self.assertFalse(any(
+                    callback.startswith("admin:flag:")
+                    for callback in sold_callbacks
+                ))
+                self.assertIn(
+                    stock_id, {stock[0] for stock in db.get_all_stocks()}
+                )
+                self.assertNotIn(
+                    stock_id, {stock[0] for stock in db.get_new()}
+                )
+                self.assertEqual(
+                    db.get_stock_orders(stock_id)[0][0], order_id
+                )
+
+                customer_query = SimpleNamespace(
+                    data=f"stock:{stock_id}",
+                    from_user=SimpleNamespace(id=700001),
+                    answer=AsyncMock(),
+                    edit_message_text=AsyncMock(),
+                    message=SimpleNamespace(reply_text=AsyncMock()),
+                )
+                await handle_callback(
+                    SimpleNamespace(callback_query=customer_query),
+                    SimpleNamespace(user_data={}, chat_data={}),
+                )
+                self.assertEqual(
+                    customer_query.edit_message_text.await_args.args[0],
+                    "❌ Stock នេះត្រូវបានលក់រួចហើយ។",
+                )
+
+                flag_query = self._wizard_query(
+                    f"admin:flag:promotion:{stock_id}"
+                )
+                await handle_callback(
+                    SimpleNamespace(callback_query=flag_query),
+                    SimpleNamespace(user_data={}, chat_data={}),
+                )
+                self.assertEqual(db.get_stock(stock_id)[10], 1)
+                returned_markup = (
+                    flag_query.edit_message_text.await_args.kwargs[
+                        "reply_markup"
+                    ]
+                )
+                self.assertNotIn(
+                    f"admin:flag:promotion:{stock_id}",
+                    {
+                        button.callback_data
+                        for markup_row in returned_markup.inline_keyboard
+                        for button in markup_row
+                    },
+                )
+
+                active_markup = admin_stock_actions(stock_id, "available")
+                active_callbacks = {
+                    button.callback_data
+                    for markup_row in active_markup.inline_keyboard
+                    for button in markup_row
+                }
+                self.assertIn(
+                    f"admin:flag:promotion:{stock_id}", active_callbacks
+                )
             finally:
                 db.DB_PATH = old_path
 
