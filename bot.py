@@ -17,6 +17,7 @@ from handlers.notifications import notification_scheduler
 from handlers.scheduler import task_scheduler
 from health import start_health_server
 from khmer_bot import KhmerExtBot
+from keyboards.buttons import start_reply_keyboard
 from handlers.menu import cancel, start, handle_callback, handle_text, handle_command
 from version import PRODUCT_NAME, __version__
 
@@ -41,9 +42,13 @@ async def handle_error(update, context):
     )
     try:
         if update and getattr(update, "callback_query", None):
-            await update.callback_query.message.reply_text(message)
+            await update.callback_query.message.reply_text(
+                message, reply_markup=start_reply_keyboard()
+            )
         elif update and getattr(update, "effective_message", None):
-            await update.effective_message.reply_text(message)
+            await update.effective_message.reply_text(
+                message, reply_markup=start_reply_keyboard()
+            )
     except Exception:
         LOGGER.exception("Could not send friendly error message")
     try:

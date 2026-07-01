@@ -25,6 +25,58 @@ PAGE_TYPES = (
     "Art", "Photography", "Health", "Fitness", "Kids", "Fashion",
 )
 
+PAGE_TYPE_LABELS = {
+    "Movie": "ភាពយន្ត",
+    "Gaming": "ហ្គេម",
+    "Shopping": "ការទិញទំនិញ",
+    "Beauty": "សម្រស់",
+    "Technology": "បច្ចេកវិទ្យា",
+    "Food": "អាហារ",
+    "Sports": "កីឡា",
+    "News": "ព័ត៌មាន",
+    "Music": "តន្ត្រី",
+    "Entertainment": "កម្សាន្ត",
+    "Education": "ការអប់រំ",
+    "Travel": "ដំណើរកម្សាន្ត",
+    "Real Estate": "អចលនទ្រព្យ",
+    "Automotive": "យានយន្ត",
+    "Pets": "សត្វចិញ្ចឹម",
+    "Business": "អាជីវកម្ម",
+    "Finance": "ហិរញ្ញវត្ថុ",
+    "Personal Blog": "ប្លុកផ្ទាល់ខ្លួន",
+    "TV / Media": "ទូរទស្សន៍ / ប្រព័ន្ធផ្សព្វផ្សាយ",
+    "Books": "សៀវភៅ",
+    "Fan Page": "Page អ្នកគាំទ្រ",
+    "E-commerce": "ពាណិជ្ជកម្មអេឡិចត្រូនិក",
+    "Art": "សិល្បៈ",
+    "Photography": "ការថតរូប",
+    "Health": "សុខភាព",
+    "Fitness": "ហាត់ប្រាណ",
+    "Kids": "កុមារ",
+    "Fashion": "ម៉ូដ",
+}
+
+
+def start_reply_keyboard():
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("🚀 /start")]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+    )
+
+
+def photo_upload_reply_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("✅ /done"), KeyboardButton("🚀 /start")],
+            [KeyboardButton("❌ បោះបង់")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+    )
+
 
 def add_cancel_button(markup):
     rows = [list(row) for row in markup.inline_keyboard]
@@ -402,10 +454,16 @@ def country_choices(country="Cambodia"):
 
 def page_type_choices():
     rows = [
-        [KeyboardButton(value) for value in PAGE_TYPES[offset:offset + 2]]
+        [
+            KeyboardButton(PAGE_TYPE_LABELS[value])
+            for value in PAGE_TYPES[offset:offset + 2]
+        ]
         for offset in range(0, len(PAGE_TYPES), 2)
     ]
-    rows.append([KeyboardButton("⬅️ Back"), KeyboardButton("❌ Cancel")])
+    rows.append([
+        KeyboardButton("⬅️ ត្រឡប់ក្រោយ"),
+        KeyboardButton("❌ បោះបង់"),
+    ])
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,

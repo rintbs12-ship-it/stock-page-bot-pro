@@ -66,12 +66,15 @@ from keyboards.buttons import (
     photo_multi_select_menu,
     photo_navigation,
     PAGE_TYPES,
+    PAGE_TYPE_LABELS,
     page_type_choices,
+    photo_upload_reply_keyboard,
     quality_search_menu,
     quality_percent_choices,
     quick_edit_menu,
     quick_status_choices,
     status_choices,
+    start_reply_keyboard,
     statistics_dashboard_menu,
     stock_detail,
     stocks_list,
@@ -184,6 +187,11 @@ BOOLEAN_WIZARD_INPUTS = {
     "❌ ទេ / No": 0,
     "Yes": 1,
     "No": 0,
+}
+
+PAGE_TYPE_INPUTS = {
+    **{page_type: page_type for page_type in PAGE_TYPES},
+    **{label: page_type for page_type, label in PAGE_TYPE_LABELS.items()},
 }
 
 
@@ -364,10 +372,18 @@ def apply_default_currency(text):
         raise ValueError("Price cannot be empty")
     symbols = {"USD": "$", "KHR": "៛", "THB": "฿", "VND": "₫"}
     existing_symbol = next(
-        (symbol for symbol in symbols.values() if value.startswith(symbol)),
+        (
+            symbol for symbol in symbols.values()
+            if value.startswith(symbol) or value.endswith(symbol)
+        ),
         None,
     )
-    numeric_text = value[len(existing_symbol):] if existing_symbol else value
+    numeric_text = value
+    if existing_symbol:
+        if numeric_text.startswith(existing_symbol):
+            numeric_text = numeric_text[len(existing_symbol):]
+        if numeric_text.endswith(existing_symbol):
+            numeric_text = numeric_text[:-len(existing_symbol)]
     numeric_text = numeric_text.replace(",", "").strip()
     try:
         amount = Decimal(numeric_text)
@@ -375,10 +391,13 @@ def apply_default_currency(text):
         raise ValueError("Price must be numeric, for example 25 or 25.50") from exc
     if amount <= 0:
         raise ValueError("Price must be greater than zero")
-    if existing_symbol:
-        return value
-    currency = get_setting("currency", "USD")
-    return f"{symbols.get(currency, '$')}{value}"
+    if amount.as_tuple().exponent < -2:
+        raise ValueError("Price can have at most two decimal places")
+    formatted = f"{amount:.0f}" if amount == amount.to_integral() else f"{amount:.2f}"
+    currency = existing_symbol or symbols.get(
+        get_setting("currency", "USD"), "$"
+    )
+    return f"{currency}{formatted}"
 
 
 def validate_http_url(value, field_name="Link"):
@@ -649,6 +668,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         getattr(user, "last_name", "") or "",
     )
     language = get_user_language(uid)
+    await update.message.reply_text(
+        "ចុច 🚀 /start ដើម្បីត្រឡប់ទៅម៉ឺនុយដើមបានគ្រប់ពេល។",
+        reply_markup=start_reply_keyboard(),
+    )
     if remove_wizard_keyboard:
         await update.message.reply_text(
             "Add Stock wizard closed.",
@@ -682,6 +705,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_data is not None:
         chat_data.clear()
     if is_admin(user_id):
+        await update.message.reply_text(
+            "ចុច 🚀 /start ដើម្បីត្រឡប់ទៅម៉ឺនុយដើម។",
+            reply_markup=start_reply_keyboard(),
+        )
         if remove_wizard_keyboard:
             await update.message.reply_text(
                 "❌ Add Stock cancelled.",
@@ -727,6 +754,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chat_data is not None:
             chat_data.clear()
         await query.answer()
+        await query.message.reply_text(
+            "ចុច 🚀 /start ដើម្បីត្រឡប់ទៅម៉ឺនុយដើម។",
+            reply_markup=start_reply_keyboard(),
+        )
         await query.edit_message_text(
             "❌ Cancelled.",
             reply_markup=(
@@ -1549,6 +1580,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📷 Uploading photos for Stock #{stock_id}\n\n"
             "Send as many photos as needed. Send /done when finished."
         )
+        await query.message.reply_text(
+            "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /done ដើម្បីបញ្ចប់។",
+            reply_markup=photo_upload_reply_keyboard(),
+        )
         return
 
     if data.startswith("admin:wizard:country:"):
@@ -1608,6 +1643,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Stock #{stock_id} saved to SQLite.\n\n"
             "📷 Now send as many photos as needed. Send /done when finished.",
         )
+        await query.message.reply_text(
+            "សូមផ្ញើរូបភាព ឬចុច ✅ /done ដើម្បីបញ្ចប់។",
+            reply_markup=photo_upload_reply_keyboard(),
+        )
         return
 
     if data.startswith("admin:wizard:"):
@@ -1648,6 +1687,10 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         continue
         context.user_data.clear()
         await update.message.reply_text(
+            "ចុច 🚀 /start ដើម្បីត្រឡប់ទៅម៉ឺនុយដើម។",
+            reply_markup=start_reply_keyboard(),
+        )
+        await update.message.reply_text(
             "✅ Stock created successfully.",
             reply_markup=admin_home(),
         )
@@ -1660,10 +1703,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     language = get_user_language(user_id)
     text = (getattr(update.message, "text", None) or "").strip()
 
-    if text == "❌ Cancel" and context.user_data.get("admin_mode") != "create":
+    if text == "🚀 /start":
+        return await start(update, context)
+
+    if text == "✅ /done":
+        return await handle_command(update, context)
+
+    if text in {"❌ Cancel", "❌ បោះបង់"} and context.user_data.get(
+        "admin_mode"
+    ) != "create":
         return await cancel(update, context)
 
-    if context.user_data.get("admin_mode") == "create" and text == "❌ Cancel":
+    if context.user_data.get("admin_mode") == "create" and text in {
+        "❌ Cancel", "❌ បោះបង់",
+    }:
         clear_photo_upload_session(user_id)
         _clear_wizard_state(context)
         await update.message.reply_text(
@@ -1676,7 +1729,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    if context.user_data.get("admin_mode") == "create" and text == "⬅️ Back":
+    if context.user_data.get("admin_mode") == "create" and text in {
+        "⬅️ Back", "⬅️ ត្រឡប់ក្រោយ",
+    }:
         if not _wizard_is_valid(context):
             return await _recover_invalid_wizard(
                 update.message, context, user_id
@@ -1757,7 +1812,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["photo_count"] = context.user_data.get("photo_count", 0) + 1
         total = len(get_stock_photos(stock_id))
         await update.message.reply_text(
-            f"✅ Photo saved ({total} total). Send another photo or /done."
+            f"✅ រក្សាទុករូបភាពបានជោគជ័យ ({total} សរុប)។ "
+            "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /done ដើម្បីបញ្ចប់។",
+            reply_markup=photo_upload_reply_keyboard(),
         )
         return
 
@@ -1919,17 +1976,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         if context.user_data.get("admin_step") == "page_type":
-            if text not in PAGE_TYPES:
+            page_type = PAGE_TYPE_INPUTS.get(text)
+            if not page_type:
                 await _render_wizard_prompt(
                     update.message,
                     context,
-                    text="Please choose a Page Type from the keyboard.",
+                    text="សូមជ្រើសរើសប្រភេទ Page ពី Keyboard ខាងក្រោម។",
                 )
                 return
-            context.user_data["draft"]["page_type"] = text
+            context.user_data["draft"]["page_type"] = page_type
             context.user_data["admin_step"] = "female_percent"
             await update.message.reply_text(
-                f"📂 Page Type selected: {text}",
+                f"📂 បានជ្រើសរើសប្រភេទ Page៖ {text}",
                 reply_markup=ReplyKeyboardRemove(),
             )
             await _render_wizard_prompt(update.message, context)

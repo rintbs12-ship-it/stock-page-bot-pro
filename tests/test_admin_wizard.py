@@ -1114,6 +1114,10 @@ class AdminWizardTests(unittest.TestCase):
                 db.set_setting("default_quality", "90")
                 self.assertEqual(db.get_user_language(999), "en")
                 self.assertEqual(apply_default_currency("250"), "฿250")
+                self.assertEqual(apply_default_currency("50$"), "$50")
+                self.assertEqual(apply_default_currency("$50"), "$50")
+                self.assertEqual(apply_default_currency("25.50$"), "$25.50")
+                self.assertEqual(apply_default_currency("$25.50"), "$25.50")
                 country_button = country_choices("Thailand").inline_keyboard[0][0]
                 self.assertEqual(
                     country_button.callback_data,
@@ -2086,13 +2090,13 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 labels = {
                     button.text for row in markup.keyboard for button in row
                 }
-                self.assertIn("Movie", labels)
-                self.assertIn("Fashion", labels)
-                self.assertIn("⬅️ Back", labels)
-                self.assertIn("❌ Cancel", labels)
+                self.assertIn("ភាពយន្ត", labels)
+                self.assertIn("ម៉ូដ", labels)
+                self.assertIn("⬅️ ត្រឡប់ក្រោយ", labels)
+                self.assertIn("❌ បោះបង់", labels)
 
                 message = SimpleNamespace(
-                    text="Movie", photo=None, reply_text=AsyncMock()
+                    text="ភាពយន្ត", photo=None, reply_text=AsyncMock()
                 )
                 await handle_text(
                     SimpleNamespace(
@@ -2171,8 +2175,8 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                             button.text
                             for row in markup.keyboard for button in row
                         }
-                        self.assertIn("⬅️ Back", labels)
-                        self.assertIn("❌ Cancel", labels)
+                        self.assertIn("⬅️ ត្រឡប់ក្រោយ", labels)
+                        self.assertIn("❌ បោះបង់", labels)
                     else:
                         callbacks = {
                             button.callback_data
@@ -2303,6 +2307,12 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result, -1)
                 self.assertEqual(context.user_data, {})
                 self.assertEqual(context.chat_data, {})
+                self.assertTrue(any(
+                    getattr(call.kwargs.get("reply_markup"), "keyboard", None)
+                    and call.kwargs["reply_markup"].keyboard[0][0].text
+                    == "🚀 /start"
+                    for call in message.reply_text.await_args_list
+                ))
                 markup = message.reply_text.await_args.kwargs["reply_markup"]
                 callbacks = {
                     button.callback_data
@@ -3079,6 +3089,80 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     update.message.reply_text.await_args.args[0],
                     "✅ Stock created successfully.",
                 )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_photo_upload_buttons_done_start_and_khmer_cancel(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "photo-buttons.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "", "$50", "100%", "",
+                    "https://facebook.com/photo", "available",
+                )
+                context = SimpleNamespace(user_data={}, chat_data={})
+                begin_photo_upload(context, 619658883, stock_id)
+                photo_message = SimpleNamespace(
+                    text=None,
+                    photo=[SimpleNamespace(file_id="photo-button-file")],
+                    reply_text=AsyncMock(),
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=photo_message,
+                    ),
+                    context,
+                )
+                labels = {
+                    button.text
+                    for row in photo_message.reply_text.await_args.kwargs[
+                        "reply_markup"
+                    ].keyboard
+                    for button in row
+                }
+                self.assertEqual(labels, {
+                    "✅ /done", "🚀 /start", "❌ បោះបង់",
+                })
+                self.assertEqual(
+                    db.get_stock_photos(stock_id), ["photo-button-file"]
+                )
+
+                done_message = SimpleNamespace(
+                    text="✅ /done", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=done_message,
+                    ),
+                    context,
+                )
+                self.assertIsNone(db.get_photo_upload_session(619658883))
+                start_markup = (
+                    done_message.reply_text.await_args_list[-2].kwargs[
+                        "reply_markup"
+                    ]
+                )
+                self.assertEqual(
+                    start_markup.keyboard[0][0].text, "🚀 /start"
+                )
+
+                begin_photo_upload(context, 619658883, stock_id)
+                cancel_message = SimpleNamespace(
+                    text="❌ បោះបង់", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=cancel_message,
+                    ),
+                    context,
+                )
+                self.assertIsNone(db.get_photo_upload_session(619658883))
+                self.assertEqual(context.user_data, {})
             finally:
                 db.DB_PATH = old_path
 
