@@ -935,9 +935,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         share_url = f"https://t.me/share/url?url={quote(row[7] or '')}&text={quote(share_text)}"
         await query.message.reply_text(
             share_text,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📤 Share on Telegram", url=share_url)
-            ]]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📤 Share on Telegram", url=share_url)],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Back", callback_data=f"stock:{stock_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Cancel", callback_data="global:cancel"
+                    ),
+                ],
+            ]),
             disable_web_page_preview=True,
         )
         return
@@ -1163,6 +1171,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "admin:manage":
+        context.user_data.clear()
+        context.user_data["admin_workflow"] = "manage_stock"
         rows = get_all_stocks()
         await query.edit_message_text(
             f"📂 Manage Stock ({len(rows)})\n\nChoose a stock:",
@@ -1172,11 +1182,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data in {"admin:list:featured", "admin:list:promotion"}:
         kind = data.rsplit(":", 1)[1]
+        context.user_data.clear()
+        context.user_data["admin_workflow"] = kind
         rows = get_special(kind)
         await query.edit_message_text(
             f"{'⭐ Featured' if kind == 'featured' else '🔥 Promotion'} "
             f"Stock ({len(rows)})",
-            reply_markup=admin_stock_picker(rows, "stock"),
+            reply_markup=admin_stock_picker(
+                rows,
+                "promotion_preview" if kind == "promotion" else "stock",
+            ),
         )
         return
 
@@ -1289,6 +1304,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             admin_stock_text(row),
             reply_markup=admin_stock_actions(stock_id),
+            disable_web_page_preview=True,
+        )
+        return
+
+    if data.startswith("admin:promotion_preview:"):
+        stock_id = int(data.rsplit(":", 1)[1])
+        row = get_stock(stock_id)
+        if not row:
+            await query.edit_message_text(
+                "Stock not found.",
+                reply_markup=admin_stock_picker(
+                    get_special("promotion"), "promotion_preview"
+                ),
+            )
+            return
+        share_text = (
+            f"Stock #{row[0]}\nFollowers: {row[1]}K\nPrice: {row[4]}\n"
+            f"Country: {row[2]}\nFacebook Page: {row[7]}"
+        )
+        share_url = (
+            f"https://t.me/share/url?url={quote(row[7] or '')}"
+            f"&text={quote(share_text)}"
+        )
+        await query.edit_message_text(
+            f"🔥 Promotion Stock Preview\n\n{admin_stock_text(row)}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "📤 Share on Telegram", url=share_url
+                )],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Back", callback_data="admin:list:promotion"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Cancel", callback_data="global:cancel"
+                    ),
+                ],
+            ]),
             disable_web_page_preview=True,
         )
         return

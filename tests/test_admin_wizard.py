@@ -1670,6 +1670,135 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
             message=SimpleNamespace(reply_text=AsyncMock()),
         )
 
+    async def test_manage_stock_selection_back_and_cancel_navigation(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "manage-navigation.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    10, "Cambodia", "All", "$25", "100%", "Managed",
+                    "https://facebook.com/manage", "available",
+                )
+                context = SimpleNamespace(user_data={}, chat_data={})
+
+                list_query = self._wizard_query("admin:manage")
+                await handle_callback(
+                    SimpleNamespace(callback_query=list_query), context
+                )
+                list_callbacks = {
+                    button.callback_data
+                    for row in list_query.edit_message_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                    for button in row
+                }
+                self.assertIn(f"admin:stock:{stock_id}", list_callbacks)
+                self.assertIn("admin:home", list_callbacks)
+                self.assertIn("global:cancel", list_callbacks)
+
+                detail_query = self._wizard_query(f"admin:stock:{stock_id}")
+                result = await handle_callback(
+                    SimpleNamespace(callback_query=detail_query), context
+                )
+                self.assertIsNone(result)
+                detail_callbacks = {
+                    button.callback_data
+                    for row in detail_query.edit_message_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                    for button in row
+                }
+                self.assertIn(f"admin:edit:{stock_id}", detail_callbacks)
+                self.assertIn(f"admin:delete:{stock_id}", detail_callbacks)
+                self.assertIn(f"admin:photo_manager:{stock_id}", detail_callbacks)
+                self.assertIn("admin:manage", detail_callbacks)
+                self.assertIn("global:cancel", detail_callbacks)
+
+                cancel_query = self._wizard_query("global:cancel")
+                result = await handle_callback(
+                    SimpleNamespace(callback_query=cancel_query), context
+                )
+                self.assertEqual(result, -1)
+                self.assertEqual(context.user_data, {})
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_promotion_preview_share_back_and_cancel_navigation(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "promotion-navigation.db")
+            try:
+                db.init_db()
+                stock_id = db.create_stock(
+                    20, "Cambodia", "All", "$50", "100%", "Promotion",
+                    "https://facebook.com/promotion", "available",
+                    promotion=1,
+                )
+                context = SimpleNamespace(user_data={}, chat_data={})
+
+                list_query = self._wizard_query("admin:list:promotion")
+                await handle_callback(
+                    SimpleNamespace(callback_query=list_query), context
+                )
+                list_callbacks = {
+                    button.callback_data
+                    for row in list_query.edit_message_text.await_args.kwargs[
+                        "reply_markup"
+                    ].inline_keyboard
+                    for button in row
+                }
+                self.assertIn(
+                    f"admin:promotion_preview:{stock_id}", list_callbacks
+                )
+                self.assertIn("admin:home", list_callbacks)
+                self.assertIn("global:cancel", list_callbacks)
+
+                preview_query = self._wizard_query(
+                    f"admin:promotion_preview:{stock_id}"
+                )
+                result = await handle_callback(
+                    SimpleNamespace(callback_query=preview_query), context
+                )
+                self.assertIsNone(result)
+                preview_markup = (
+                    preview_query.edit_message_text.await_args.kwargs[
+                        "reply_markup"
+                    ]
+                )
+                preview_callbacks = {
+                    button.callback_data
+                    for row in preview_markup.inline_keyboard for button in row
+                    if button.callback_data
+                }
+                self.assertEqual(preview_callbacks, {
+                    "admin:list:promotion", "global:cancel",
+                })
+                self.assertTrue(any(
+                    button.text == "📤 Share on Telegram" and button.url
+                    for row in preview_markup.inline_keyboard for button in row
+                ))
+
+                share_query = self._wizard_query(f"share:{stock_id}")
+                await handle_callback(
+                    SimpleNamespace(callback_query=share_query), context
+                )
+                share_markup = (
+                    share_query.message.reply_text.await_args.kwargs[
+                        "reply_markup"
+                    ]
+                )
+                share_callbacks = {
+                    button.callback_data
+                    for row in share_markup.inline_keyboard for button in row
+                    if button.callback_data
+                }
+                self.assertEqual(share_callbacks, {
+                    f"stock:{stock_id}", "global:cancel",
+                })
+            finally:
+                db.DB_PATH = old_path
+
     async def test_ready_transfer_yes_and_no_advance_to_business_ready(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:
