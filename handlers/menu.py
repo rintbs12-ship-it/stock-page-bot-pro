@@ -1347,31 +1347,60 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("admin:set_status:"):
-        _, _, stock_id, status = data.split(":")
-        update_stock_field(int(stock_id), "status", normalize_status(status))
+        parts = data.split(":")
+        if len(parts) != 4 or parts[3] not in {"available", "sold"}:
+            await query.edit_message_text(
+                "Invalid stock status action.",
+                reply_markup=admin_home(),
+            )
+            return
+        stock_id, status = int(parts[2]), normalize_status(parts[3])
+        if not get_stock(stock_id):
+            await query.edit_message_text(
+                "Stock not found.",
+                reply_markup=admin_stock_picker(get_all_stocks(), "stock"),
+            )
+            return
+        update_stock_field(stock_id, "status", status)
         add_audit_log(
             uid, admin_display_name(query.from_user), "Edit Stock",
-            f"Stock #{stock_id}", f"status={normalize_status(status)}",
+            f"Stock #{stock_id}", f"status={status}",
         )
-        row = get_stock(int(stock_id))
+        row = get_stock(stock_id)
         await query.edit_message_text(
-            admin_stock_text(row),
-            reply_markup=admin_stock_actions(int(stock_id)),
+            f"✅ Status changed to {status.title()}.\n\n"
+            f"{admin_stock_text(row)}",
+            reply_markup=admin_stock_actions(stock_id),
             disable_web_page_preview=True,
         )
         return
 
     if data.startswith("admin:flag:"):
-        _, _, field, stock_id = data.split(":")
-        toggle_stock_flag(int(stock_id), field)
+        parts = data.split(":")
+        if len(parts) != 4 or parts[2] not in {"featured", "promotion"}:
+            await query.edit_message_text(
+                "Invalid stock flag action.",
+                reply_markup=admin_home(),
+            )
+            return
+        field, stock_id = parts[2], int(parts[3])
+        new_value = toggle_stock_flag(stock_id, field)
+        if new_value is None:
+            await query.edit_message_text(
+                "Stock not found.",
+                reply_markup=admin_stock_picker(get_all_stocks(), "stock"),
+            )
+            return
         add_audit_log(
             uid, admin_display_name(query.from_user), "Edit Stock",
             f"Stock #{stock_id}", f"toggled {field}",
         )
-        row = get_stock(int(stock_id))
+        row = get_stock(stock_id)
         await query.edit_message_text(
-            admin_stock_text(row),
-            reply_markup=admin_stock_actions(int(stock_id)),
+            f"✅ {field.replace('_', ' ').title()} "
+            f"{'enabled' if new_value else 'disabled'}.\n\n"
+            f"{admin_stock_text(row)}",
+            reply_markup=admin_stock_actions(stock_id),
             disable_web_page_preview=True,
         )
         return

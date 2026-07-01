@@ -1715,6 +1715,95 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("admin:manage", detail_callbacks)
                 self.assertIn("global:cancel", detail_callbacks)
 
+                quick_query = self._wizard_query(f"admin:quick:{stock_id}")
+                self.assertIsNone(await handle_callback(
+                    SimpleNamespace(callback_query=quick_query), context
+                ))
+                self.assertIn(
+                    "Quick Edit",
+                    quick_query.edit_message_text.await_args.args[0],
+                )
+
+                edit_query = self._wizard_query(f"admin:edit:{stock_id}")
+                self.assertIsNone(await handle_callback(
+                    SimpleNamespace(callback_query=edit_query), context
+                ))
+                self.assertIn(
+                    "Choose a field",
+                    edit_query.edit_message_text.await_args.args[0],
+                )
+
+                delete_query = self._wizard_query(f"admin:delete:{stock_id}")
+                self.assertIsNone(await handle_callback(
+                    SimpleNamespace(callback_query=delete_query), context
+                ))
+                self.assertIn(
+                    "Permanently delete",
+                    delete_query.edit_message_text.await_args.args[0],
+                )
+                self.assertIsNotNone(db.get_stock(stock_id))
+
+                for status in ("sold", "available"):
+                    status_query = self._wizard_query(
+                        f"admin:set_status:{stock_id}:{status}"
+                    )
+                    self.assertIsNone(await handle_callback(
+                        SimpleNamespace(callback_query=status_query), context
+                    ))
+                    self.assertEqual(db.get_stock(stock_id)[8], status)
+                    self.assertIn(
+                        f"Status changed to {status.title()}",
+                        status_query.edit_message_text.await_args.args[0],
+                    )
+
+                for field, column in (("featured", 9), ("promotion", 10)):
+                    for expected in (1, 0):
+                        flag_query = self._wizard_query(
+                            f"admin:flag:{field}:{stock_id}"
+                        )
+                        self.assertIsNone(await handle_callback(
+                            SimpleNamespace(callback_query=flag_query), context
+                        ))
+                        self.assertEqual(
+                            db.get_stock(stock_id)[column], expected
+                        )
+                        self.assertIn(
+                            "enabled" if expected else "disabled",
+                            flag_query.edit_message_text.await_args.args[0],
+                        )
+                        refreshed_callbacks = {
+                            button.callback_data
+                            for row in flag_query.edit_message_text.await_args
+                            .kwargs["reply_markup"].inline_keyboard
+                            for button in row
+                        }
+                        self.assertIn(
+                            f"admin:flag:promotion:{stock_id}",
+                            refreshed_callbacks,
+                        )
+                        self.assertIn("admin:manage", refreshed_callbacks)
+                        self.assertIn("global:cancel", refreshed_callbacks)
+
+                photos_query = self._wizard_query(
+                    f"admin:photo_manager:{stock_id}"
+                )
+                self.assertIsNone(await handle_callback(
+                    SimpleNamespace(callback_query=photos_query), context
+                ))
+                self.assertIn(
+                    "Photo Manager",
+                    photos_query.edit_message_text.await_args.args[0],
+                )
+
+                back_query = self._wizard_query("admin:manage")
+                self.assertIsNone(await handle_callback(
+                    SimpleNamespace(callback_query=back_query), context
+                ))
+                self.assertIn(
+                    "Manage Stock",
+                    back_query.edit_message_text.await_args.args[0],
+                )
+
                 cancel_query = self._wizard_query("global:cancel")
                 result = await handle_callback(
                     SimpleNamespace(callback_query=cancel_query), context
