@@ -103,6 +103,24 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS telegram_users (
+        telegram_id INTEGER PRIMARY KEY,
+        username TEXT DEFAULT '',
+        first_name TEXT DEFAULT '',
+        last_name TEXT DEFAULT '',
+        language_code TEXT DEFAULT '',
+        first_seen TEXT NOT NULL DEFAULT '',
+        last_seen TEXT NOT NULL DEFAULT '',
+        total_messages INTEGER NOT NULL DEFAULT 0,
+        total_orders INTEGER NOT NULL DEFAULT 0,
+        total_spent REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active'
+            CHECK(status IN ('active', 'blocked')),
+        is_admin INTEGER NOT NULL DEFAULT 0
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL DEFAULT ''
@@ -393,6 +411,100 @@ def init_db():
             cur, telegram_id, migration_time, touch_activity=False
         )
     cur.execute("""
+        INSERT OR IGNORE INTO telegram_users (
+            telegram_id, username, first_name, last_name, language_code,
+            first_seen, last_seen, total_orders, total_spent, status, is_admin
+        )
+        SELECT p.telegram_id, p.username, p.first_name, p.last_name,
+               COALESCE(pref.language, ''),
+               COALESCE(NULLIF(p.created_at, ''), ?),
+               COALESCE(NULLIF(p.updated_at, ''), ?),
+               p.total_orders, p.total_spent,
+               CASE
+                   WHEN a.user_id IS NOT NULL THEN 'active'
+                   WHEN p.is_banned=1 THEN 'blocked'
+                   ELSE 'active'
+               END,
+               CASE WHEN a.user_id IS NULL THEN 0 ELSE 1 END
+        FROM customer_profiles p
+        LEFT JOIN user_preferences pref ON pref.user_id=p.telegram_id
+        LEFT JOIN admins a ON a.user_id=p.telegram_id
+    """, (migration_time, migration_time))
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_telegram_users_order_insert
+        AFTER INSERT ON orders
+        BEGIN
+            UPDATE telegram_users
+            SET total_orders=(
+                    SELECT COUNT(*) FROM orders
+                    WHERE customer_id=NEW.customer_id
+                ),
+                total_spent=COALESCE((
+                    SELECT SUM(CAST(REPLACE(
+                        REPLACE(price, '$', ''), ',', ''
+                    ) AS REAL))
+                    FROM orders
+                    WHERE customer_id=NEW.customer_id
+                      AND status='completed'
+                ), 0)
+            WHERE telegram_id=NEW.customer_id;
+        END
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_telegram_users_order_update
+        AFTER UPDATE OF status, price, customer_id ON orders
+        BEGIN
+            UPDATE telegram_users
+            SET total_orders=(
+                    SELECT COUNT(*) FROM orders
+                    WHERE customer_id=OLD.customer_id
+                ),
+                total_spent=COALESCE((
+                    SELECT SUM(CAST(REPLACE(
+                        REPLACE(price, '$', ''), ',', ''
+                    ) AS REAL))
+                    FROM orders
+                    WHERE customer_id=OLD.customer_id
+                      AND status='completed'
+                ), 0)
+            WHERE telegram_id=OLD.customer_id;
+            UPDATE telegram_users
+            SET total_orders=(
+                    SELECT COUNT(*) FROM orders
+                    WHERE customer_id=NEW.customer_id
+                ),
+                total_spent=COALESCE((
+                    SELECT SUM(CAST(REPLACE(
+                        REPLACE(price, '$', ''), ',', ''
+                    ) AS REAL))
+                    FROM orders
+                    WHERE customer_id=NEW.customer_id
+                      AND status='completed'
+                ), 0)
+            WHERE telegram_id=NEW.customer_id;
+        END
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_telegram_users_order_delete
+        AFTER DELETE ON orders
+        BEGIN
+            UPDATE telegram_users
+            SET total_orders=(
+                    SELECT COUNT(*) FROM orders
+                    WHERE customer_id=OLD.customer_id
+                ),
+                total_spent=COALESCE((
+                    SELECT SUM(CAST(REPLACE(
+                        REPLACE(price, '$', ''), ',', ''
+                    ) AS REAL))
+                    FROM orders
+                    WHERE customer_id=OLD.customer_id
+                      AND status='completed'
+                ), 0)
+            WHERE telegram_id=OLD.customer_id;
+        END
+    """)
+    cur.execute("""
         INSERT INTO order_receipts (order_id, file_id, uploaded_by, created_at)
         SELECT o.order_id, o.receipt_file_id, o.customer_id,
                COALESCE(NULLIF(o.updated_at, ''), o.created_at)
@@ -557,6 +669,22 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_payment_logs_action_created "
         "ON payment_logs(action, created_at)"
     )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_users_last_seen "
+        "ON telegram_users(last_seen DESC, telegram_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_users_status "
+        "ON telegram_users(status, last_seen DESC)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_users_username "
+        "ON telegram_users(username COLLATE NOCASE)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_telegram_users_name "
+        "ON telegram_users(first_name COLLATE NOCASE, last_name COLLATE NOCASE)"
+    )
 
     con.commit()
     con.close()
@@ -572,11 +700,13 @@ def verify_database():
         "pending_stock_notifications", "photo_upload_sessions",
         "recent_searches", "saved_filters", "scheduled_jobs",
         "stock_analytics", "stock_photos", "stocks", "user_preferences",
+        "telegram_users",
     }
     required_indexes = {
         "idx_stocks_status", "idx_orders_customer", "idx_orders_status_created",
         "idx_customer_profiles_activity", "idx_scheduled_jobs_due",
         "idx_audit_logs_created",
+        "idx_telegram_users_last_seen", "idx_telegram_users_status",
     }
     con = connect()
     try:
@@ -1358,17 +1488,171 @@ def list_admins():
     return rows
 
 
+def track_telegram_user(
+    telegram_id, username="", first_name="", last_name="",
+    language_code="", is_admin=False, count_message=False,
+):
+    telegram_id = int(telegram_id)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    con = connect()
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO telegram_users (
+            telegram_id, username, first_name, last_name, language_code,
+            first_seen, last_seen, total_messages, status, is_admin
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        ON CONFLICT(telegram_id) DO UPDATE SET
+            username=excluded.username,
+            first_name=excluded.first_name,
+            last_name=excluded.last_name,
+            language_code=excluded.language_code,
+            last_seen=excluded.last_seen,
+            total_messages=telegram_users.total_messages
+                + excluded.total_messages,
+            status=CASE WHEN excluded.is_admin=1
+                THEN 'active' ELSE telegram_users.status END,
+            is_admin=excluded.is_admin
+    """, (
+        telegram_id, username or "", first_name or "", last_name or "",
+        language_code or "", now, now, 1 if count_message else 0,
+        1 if is_admin else 0,
+    ))
+    cur.execute("""
+        UPDATE telegram_users
+        SET total_orders=(
+                SELECT COUNT(*) FROM orders WHERE customer_id=?
+            ),
+            total_spent=COALESCE((
+                SELECT SUM(
+                    CAST(REPLACE(REPLACE(price, '$', ''), ',', '') AS REAL)
+                )
+                FROM orders
+                WHERE customer_id=? AND status='completed'
+            ), 0)
+        WHERE telegram_id=?
+    """, (telegram_id, telegram_id, telegram_id))
+    con.commit()
+    row = cur.execute("""
+        SELECT telegram_id, username, first_name, last_name, language_code,
+               first_seen, last_seen, total_messages, total_orders,
+               total_spent, status, is_admin
+        FROM telegram_users WHERE telegram_id=?
+    """, (telegram_id,)).fetchone()
+    con.close()
+    return row
+
+
+def get_telegram_user(telegram_id):
+    con = connect()
+    row = con.execute("""
+        SELECT telegram_id, username, first_name, last_name, language_code,
+               first_seen, last_seen, total_messages, total_orders,
+               total_spent, status, is_admin
+        FROM telegram_users WHERE telegram_id=?
+    """, (int(telegram_id),)).fetchone()
+    con.close()
+    return row
+
+
+def is_telegram_user_blocked(telegram_id):
+    con = connect()
+    row = con.execute(
+        "SELECT status, is_admin FROM telegram_users WHERE telegram_id=?",
+        (int(telegram_id),),
+    ).fetchone()
+    con.close()
+    return bool(row and row[0] == "blocked" and not row[1])
+
+
+def set_telegram_user_status(telegram_id, status):
+    if status not in {"active", "blocked"}:
+        raise ValueError("Invalid Telegram user status.")
+    telegram_id = int(telegram_id)
+    if status == "blocked" and is_admin_user(telegram_id):
+        return False
+    con = connect()
+    cur = con.cursor()
+    cur.execute(
+        "UPDATE telegram_users SET status=? WHERE telegram_id=? AND is_admin=0",
+        (status, telegram_id),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def get_telegram_user_stats():
+    con = connect()
+    row = con.execute("""
+        SELECT COUNT(*),
+               SUM(CASE WHEN last_seen >= datetime(
+                   'now', 'localtime', 'start of day'
+               ) THEN 1 ELSE 0 END),
+               SUM(CASE WHEN first_seen >= datetime(
+                   'now', 'localtime', 'start of day'
+               ) THEN 1 ELSE 0 END),
+               SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN total_orders>0 THEN 1 ELSE 0 END)
+        FROM telegram_users
+    """).fetchone()
+    con.close()
+    return tuple(int(value or 0) for value in row)
+
+
+def list_telegram_users(page=1, per_page=20, search=""):
+    page = max(1, int(page))
+    per_page = max(1, min(100, int(per_page)))
+    search = str(search or "").strip().lstrip("@")
+    params = []
+    where = ""
+    if search:
+        clauses = [
+            "username LIKE ? COLLATE NOCASE",
+            "first_name LIKE ? COLLATE NOCASE",
+            "last_name LIKE ? COLLATE NOCASE",
+            "(first_name || ' ' || last_name) LIKE ? COLLATE NOCASE",
+        ]
+        prefix = f"{search}%"
+        contains = f"%{search}%"
+        params.extend([prefix, contains, contains, contains])
+        if search.isdigit():
+            clauses.insert(0, "telegram_id=?")
+            params.insert(0, int(search))
+        where = " WHERE " + " OR ".join(clauses)
+    con = connect()
+    total = con.execute(
+        f"SELECT COUNT(*) FROM telegram_users{where}", params
+    ).fetchone()[0]
+    rows = con.execute(f"""
+        SELECT telegram_id, username, first_name, last_name, language_code,
+               first_seen, last_seen, total_messages, total_orders,
+               total_spent, status, is_admin
+        FROM telegram_users{where}
+        ORDER BY last_seen DESC, telegram_id DESC
+        LIMIT ? OFFSET ?
+    """, params + [per_page, (page - 1) * per_page]).fetchall()
+    con.close()
+    return rows, total
+
+
 def add_admin(user_id):
+    user_id = int(user_id)
     con = connect()
     cur = con.cursor()
     cur.execute(
         "INSERT OR IGNORE INTO admins (user_id, added_at) VALUES (?, ?)",
-        (int(user_id), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        (user_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     )
     added = cur.rowcount > 0
+    cur.execute(
+        "UPDATE telegram_users SET is_admin=1, status='active' "
+        "WHERE telegram_id=?",
+        (user_id,),
+    )
     con.commit()
     con.close()
-    _ADMIN_CACHE[(DB_PATH, int(user_id))] = True
+    _ADMIN_CACHE[(DB_PATH, user_id)] = True
     return added
 
 
@@ -1380,6 +1664,10 @@ def remove_admin(user_id):
     cur = con.cursor()
     cur.execute("DELETE FROM admins WHERE user_id=?", (user_id,))
     removed = cur.rowcount > 0
+    cur.execute(
+        "UPDATE telegram_users SET is_admin=0 WHERE telegram_id=?",
+        (user_id,),
+    )
     con.commit()
     con.close()
     _ADMIN_CACHE[(DB_PATH, user_id)] = False

@@ -47,6 +47,10 @@ from handlers.scheduler import (
     handle_scheduler_callback,
     handle_scheduler_message,
 )
+from handlers.user_management import (
+    handle_user_management_callback,
+    handle_user_management_message,
+)
 from keyboards.buttons import (
     admin_home,
     admin_edit_menu,
@@ -800,6 +804,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("admin:notify"):
         await handle_notification_callback(query, context)
+        return
+
+    if data.startswith("admin:users"):
+        await handle_user_management_callback(query, context)
         return
 
     if data.startswith(("admin:customers", "admin:customer:")):
@@ -1871,6 +1879,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Broadcast documents must be consumed before the Backup restore handler.
     if is_admin(user_id) and await handle_notification_message(update, context):
+        return
+
+    if is_admin(user_id) and await handle_user_management_message(update, context):
         return
 
     if getattr(update.message, "document", None):

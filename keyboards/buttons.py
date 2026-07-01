@@ -288,6 +288,9 @@ def admin_home():
         [InlineKeyboardButton("📦 Order Manager", callback_data="admin:order_manager")],
         [InlineKeyboardButton("👥 Customers", callback_data="admin:customers")],
         [InlineKeyboardButton(
+            "👥 គ្រប់គ្រងអ្នកប្រើ", callback_data="admin:users"
+        )],
+        [InlineKeyboardButton(
             "📢 Notification Center", callback_data="admin:notify"
         )],
         [InlineKeyboardButton("📜 Audit Logs", callback_data="admin:audit")],

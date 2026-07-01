@@ -3,13 +3,24 @@ import logging
 from datetime import datetime
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 from config import BOT_TOKEN
 from database.db import (
     add_demo_stock_if_empty,
     add_maintenance_run,
     init_db,
+    is_admin_user,
+    is_telegram_user_blocked,
     list_admins,
+    track_telegram_user,
     verify_database,
 )
 from handlers.backup import run_due_auto_backup
@@ -25,6 +36,38 @@ from version import PRODUCT_NAME, __version__
 LOGGER = logging.getLogger(__name__)
 HEALTH_SERVER_KEY = "health_server"
 BACKGROUND_TASKS_KEY = "background_tasks"
+BLOCKED_USER_MESSAGE = (
+    "❌ គណនីរបស់អ្នកត្រូវបានផ្អាកពីការប្រើប្រាស់ Bot នេះ។\n"
+    "សូមទាក់ទង Admin ប្រសិនបើអ្នកគិតថាជាកំហុស។"
+)
+
+
+async def track_and_guard_user(update: Update, context):
+    user = update.effective_user
+    if not user:
+        return
+    admin = is_admin_user(user.id)
+    try:
+        track_telegram_user(
+            user.id,
+            getattr(user, "username", "") or "",
+            getattr(user, "first_name", "") or "",
+            getattr(user, "last_name", "") or "",
+            getattr(user, "language_code", "") or "",
+            is_admin=admin,
+            count_message=update.message is not None,
+        )
+    except Exception:
+        LOGGER.exception("Could not track Telegram user %s", user.id)
+    if admin or not is_telegram_user_blocked(user.id):
+        return
+    LOGGER.info("Blocked Telegram user update stopped: user_id=%s", user.id)
+    if update.callback_query:
+        await update.callback_query.answer(BLOCKED_USER_MESSAGE, show_alert=True)
+        await update.callback_query.message.reply_text(BLOCKED_USER_MESSAGE)
+    elif update.effective_message:
+        await update.effective_message.reply_text(BLOCKED_USER_MESSAGE)
+    raise ApplicationHandlerStop
 
 
 async def handle_error(update, context):
@@ -119,6 +162,7 @@ def build_application():
         .post_shutdown(post_shutdown)
         .build()
     )
+    app.add_handler(TypeHandler(Update, track_and_guard_user), group=-1)
     app.add_handler(MessageHandler(
         filters.Regex(
             r"^\s*(?:✅\ufe0f?\s*)?/(?:done|រួចរាល់)(?:@\w+)?\s*$"

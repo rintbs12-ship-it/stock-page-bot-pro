@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from telegram import Chat, Message, Update, User
 from telegram.error import Forbidden, TelegramError
-from telegram.ext import ConversationHandler
+from telegram.ext import ApplicationHandlerStop, ConversationHandler
 
 import bot
 from localization import translate_reply_markup, translate_ui_text
@@ -50,6 +50,13 @@ from handlers.scheduler import (
     reminder_manager_menu,
     scheduled_announcements_menu,
     scheduler_menu,
+)
+from handlers.user_management import (
+    dashboard_text as user_dashboard_text,
+    handle_user_management_callback,
+    handle_user_management_message,
+    user_detail_keyboard,
+    user_list_keyboard,
 )
 from handlers.orders import (
     format_order,
@@ -355,6 +362,7 @@ class AdminWizardTests(unittest.TestCase):
                 "admin:analytics_dashboard",
                 "admin:order_manager",
                 "admin:customers",
+                "admin:users",
                 "admin:notify",
                 "admin:audit",
                 "admin:search",
@@ -3218,6 +3226,171 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
             )
             update = Update(update_id=index, message=message)
             self.assertTrue(handler.check_update(update), text)
+
+    async def test_user_management_tracking_search_block_and_guard(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "telegram-users.db")
+            try:
+                db.init_db()
+                for user_id in range(100001, 100023):
+                    db.track_telegram_user(
+                        user_id,
+                        username=f"user{user_id}",
+                        first_name=f"Name {user_id}",
+                        language_code="km",
+                        count_message=True,
+                    )
+                db.track_telegram_user(
+                    619658883,
+                    username="owner",
+                    first_name="Owner",
+                    is_admin=True,
+                    count_message=True,
+                )
+                stock_id = db.create_stock(
+                    10, "Cambodia", "All", "$25.50", "100%", "",
+                    "https://facebook.com/user-module", "available",
+                )
+                db.create_order(
+                    stock_id, 100005, "user100005", "$25.50"
+                )
+                con = db.connect()
+                con.execute(
+                    "UPDATE orders SET status='completed' WHERE customer_id=?",
+                    (100005,),
+                )
+                con.commit()
+                con.close()
+                buyer = db.get_telegram_user(100005)
+                self.assertEqual(buyer[8], 1)
+                self.assertEqual(buyer[9], 25.50)
+
+                rows, total = db.list_telegram_users(page=1, per_page=20)
+                self.assertEqual(len(rows), 20)
+                self.assertEqual(total, 23)
+                search_rows, search_total = db.list_telegram_users(
+                    search="@user100005"
+                )
+                self.assertEqual(search_total, 1)
+                self.assertEqual(search_rows[0][0], 100005)
+                self.assertIn("អ្នកប្រើសរុប : 23", user_dashboard_text())
+
+                markup = admin_home()
+                buttons = {
+                    (button.text, button.callback_data)
+                    for row in markup.inline_keyboard for button in row
+                }
+                self.assertIn(
+                    ("👥 គ្រប់គ្រងអ្នកប្រើ", "admin:users"),
+                    buttons,
+                )
+                self.assertEqual(
+                    sum(
+                        button.callback_data == "admin:users"
+                        for row in markup.inline_keyboard for button in row
+                    ),
+                    1,
+                )
+                page_markup = user_list_keyboard(rows, total, 1)
+                callbacks = {
+                    button.callback_data
+                    for row in page_markup.inline_keyboard for button in row
+                }
+                self.assertIn("admin:users:list:2", callbacks)
+
+                self.assertTrue(
+                    db.set_telegram_user_status(100005, "blocked")
+                )
+                blocked = db.get_telegram_user(100005)
+                self.assertEqual(blocked[10], "blocked")
+                self.assertFalse(
+                    db.set_telegram_user_status(619658883, "blocked")
+                )
+                self.assertNotIn(
+                    "admin:users:block:619658883:1",
+                    {
+                        button.callback_data
+                        for row in user_detail_keyboard(
+                            db.get_telegram_user(619658883), 1
+                        ).inline_keyboard
+                        for button in row
+                    },
+                )
+
+                message = SimpleNamespace(reply_text=AsyncMock())
+                update = SimpleNamespace(
+                    effective_user=SimpleNamespace(
+                        id=100005,
+                        username="user100005",
+                        first_name="Blocked",
+                        last_name="User",
+                        language_code="km",
+                    ),
+                    message=message,
+                    callback_query=None,
+                    effective_message=message,
+                )
+                with self.assertRaises(ApplicationHandlerStop):
+                    await bot.track_and_guard_user(
+                        update, SimpleNamespace()
+                    )
+                message.reply_text.assert_awaited_once_with(
+                    bot.BLOCKED_USER_MESSAGE
+                )
+                self.assertEqual(
+                    db.get_telegram_user(100005)[7], 2
+                )
+            finally:
+                db.DB_PATH = old_path
+
+    async def test_user_management_callbacks_and_search_message(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "user-management-ui.db")
+            try:
+                db.init_db()
+                db.track_telegram_user(
+                    200001, "searchme", "Search", "Person",
+                    language_code="km",
+                )
+                context = SimpleNamespace(user_data={}, chat_data={})
+                query = SimpleNamespace(
+                    data="admin:users",
+                    from_user=SimpleNamespace(
+                        id=619658883, username="owner",
+                        first_name="Owner", last_name="",
+                    ),
+                    edit_message_text=AsyncMock(),
+                    answer=AsyncMock(),
+                    message=SimpleNamespace(reply_text=AsyncMock()),
+                )
+                self.assertTrue(
+                    await handle_user_management_callback(query, context)
+                )
+                self.assertIn(
+                    "ការគ្រប់គ្រងអ្នកប្រើ",
+                    query.edit_message_text.await_args.args[0],
+                )
+
+                context.user_data["user_management_mode"] = "search"
+                search_message = SimpleNamespace(
+                    text="searchme", reply_text=AsyncMock()
+                )
+                handled = await handle_user_management_message(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=search_message,
+                    ),
+                    context,
+                )
+                self.assertTrue(handled)
+                self.assertIn(
+                    "1. @searchme",
+                    search_message.reply_text.await_args.args[0],
+                )
+            finally:
+                db.DB_PATH = old_path
 
 
 if __name__ == "__main__":
