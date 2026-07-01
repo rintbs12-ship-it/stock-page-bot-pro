@@ -716,7 +716,10 @@ class AdminWizardTests(unittest.TestCase):
                     "Test description", "https://facebook.com/test",
                     "available", page_type="Movie",
                 )
-                self.assertEqual(db.get_stock(stock_id)[21], "Movie")
+                self.assertEqual(
+                    db.get_stock(stock_id)[21],
+                    "Movie",
+                )
                 card = customer_stock_text(db.get_stock(stock_id), "en")
                 self.assertIn("📂 Page Type : Movie", card)
                 self.assertLess(
@@ -2229,13 +2232,36 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 labels = {
                     button.text for row in markup.keyboard for button in row
                 }
-                self.assertIn("ភាពយន្ត", labels)
-                self.assertIn("ម៉ូដ", labels)
+                self.assertEqual(labels, {
+                    "🎬 ប្រភេទផេករឿងសម្រាយ",
+                    "📈 ប្រភេទផេក PE",
+                    "⬅️ ត្រឡប់ក្រោយ",
+                    "❌ បោះបង់",
+                })
                 self.assertIn("⬅️ ត្រឡប់ក្រោយ", labels)
                 self.assertIn("❌ បោះបង់", labels)
 
+                invalid_message = SimpleNamespace(
+                    text="Movie", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=invalid_message,
+                    ),
+                    context,
+                )
+                self.assertEqual(
+                    context.user_data["admin_step"], "page_type"
+                )
+                self.assertNotIn(
+                    "page_type", context.user_data["draft"]
+                )
+
                 message = SimpleNamespace(
-                    text="ភាពយន្ត", photo=None, reply_text=AsyncMock()
+                    text="🎬 ប្រភេទផេករឿងសម្រាយ",
+                    photo=None,
+                    reply_text=AsyncMock(),
                 )
                 await handle_text(
                     SimpleNamespace(
@@ -2244,12 +2270,46 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     context,
                 )
-                self.assertEqual(context.user_data["draft"]["page_type"], "Movie")
+                self.assertEqual(
+                    context.user_data["draft"]["page_type"],
+                    "ប្រភេទផេករឿងសម្រាយ",
+                )
                 self.assertEqual(context.user_data["admin_step"], "female_percent")
                 self.assertEqual(message.reply_text.await_count, 2)
                 self.assertIn(
                     "7/17 Female percent",
                     message.reply_text.await_args_list[1].args[0],
+                )
+
+                pe_context = SimpleNamespace(
+                    user_data={
+                        "admin_mode": "create",
+                        "admin_step": "page_type",
+                        "draft": {
+                            "followers": 15,
+                            "price": "$50",
+                            "price_display_mode": "both",
+                            "country": "Cambodia",
+                            "audience": "female",
+                        },
+                    },
+                    chat_data={},
+                )
+                pe_message = SimpleNamespace(
+                    text="📈 ប្រភេទផេក PE",
+                    photo=None,
+                    reply_text=AsyncMock(),
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=pe_message,
+                    ),
+                    pe_context,
+                )
+                self.assertEqual(
+                    pe_context.user_data["draft"]["page_type"],
+                    "ប្រភេទផេក PE",
                 )
             finally:
                 db.DB_PATH = old_path
@@ -3416,7 +3476,9 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Followers updated", message.reply_text.await_args.args[0])
 
                 page_type_message = SimpleNamespace(
-                    photo=[], text="Gaming", reply_text=AsyncMock()
+                    photo=[],
+                    text="📈 ប្រភេទផេក PE",
+                    reply_text=AsyncMock(),
                 )
                 await handle_text(
                     SimpleNamespace(
@@ -3429,7 +3491,9 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         "edit_field": "page_type",
                     }),
                 )
-                self.assertEqual(db.get_stock(stock_id)[21], "Gaming")
+                self.assertEqual(
+                    db.get_stock(stock_id)[21], "ប្រភេទផេក PE"
+                )
                 self.assertIn(
                     "Page Type updated",
                     page_type_message.reply_text.await_args.args[0],
@@ -3449,9 +3513,10 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     "draft": {
                         "followers": 15,
                         "price": "$50",
+                        "price_display_mode": "both",
                         "country": "Cambodia",
                         "audience": "All",
-                        "page_type": "Movie",
+                        "page_type": "ប្រភេទផេករឿងសម្រាយ",
                         "female_percent": 55,
                         "male_percent": 45,
                         "quality_percent": 95,
@@ -3472,7 +3537,10 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     db.get_stock(stock_id)[12:21],
                     (55, 45, 95, 1, "high", 1, 1, 1, 1),
                 )
-                self.assertEqual(db.get_stock(stock_id)[21], "Movie")
+                self.assertEqual(
+                    db.get_stock(stock_id)[21],
+                    "ប្រភេទផេករឿងសម្រាយ",
+                )
                 self.assertEqual(db.get_photo_upload_session(619658883), stock_id)
                 self.assertEqual(context.user_data["admin_mode"], "upload_photos")
 

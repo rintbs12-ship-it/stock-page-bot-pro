@@ -2303,8 +2303,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     value = validate_http_url(value, "Facebook Link")
                 elif field == "price":
                     value = apply_default_currency(value)
-                elif field == "page_type" and value not in PAGE_TYPES:
-                    raise ValueError("Choose a valid Page Type.")
+                elif field == "page_type":
+                    value = PAGE_TYPE_INPUTS.get(value)
+                    if not value:
+                        raise ValueError("Choose a valid Page Type.")
             except ValueError as exc:
                 await update.message.reply_text(f"Invalid value: {exc}")
                 return
@@ -2346,8 +2348,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     value = validate_http_url(value, "Facebook Link")
                 elif field == "price":
                     value = apply_default_currency(value)
-                elif field == "page_type" and value not in PAGE_TYPES:
-                    raise ValueError("Choose a valid Page Type.")
+                elif field == "page_type":
+                    value = PAGE_TYPE_INPUTS.get(value)
+                    if not value:
+                        raise ValueError("Choose a valid Page Type.")
             except ValueError as exc:
                 await update.message.reply_text(f"Invalid value: {exc}")
                 return

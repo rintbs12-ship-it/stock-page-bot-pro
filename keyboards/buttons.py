@@ -18,42 +18,13 @@ MENUS = [
 ]
 
 PAGE_TYPES = (
-    "Movie", "Gaming", "Shopping", "Beauty", "Technology", "Food",
-    "Sports", "News", "Music", "Entertainment", "Education", "Travel",
-    "Real Estate", "Automotive", "Pets", "Business", "Finance",
-    "Personal Blog", "TV / Media", "Books", "Fan Page", "E-commerce",
-    "Art", "Photography", "Health", "Fitness", "Kids", "Fashion",
+    "ប្រភេទផេករឿងសម្រាយ",
+    "ប្រភេទផេក PE",
 )
 
 PAGE_TYPE_LABELS = {
-    "Movie": "ភាពយន្ត",
-    "Gaming": "ហ្គេម",
-    "Shopping": "ការទិញទំនិញ",
-    "Beauty": "សម្រស់",
-    "Technology": "បច្ចេកវិទ្យា",
-    "Food": "អាហារ",
-    "Sports": "កីឡា",
-    "News": "ព័ត៌មាន",
-    "Music": "តន្ត្រី",
-    "Entertainment": "កម្សាន្ត",
-    "Education": "ការអប់រំ",
-    "Travel": "ដំណើរកម្សាន្ត",
-    "Real Estate": "អចលនទ្រព្យ",
-    "Automotive": "យានយន្ត",
-    "Pets": "សត្វចិញ្ចឹម",
-    "Business": "អាជីវកម្ម",
-    "Finance": "ហិរញ្ញវត្ថុ",
-    "Personal Blog": "ប្លុកផ្ទាល់ខ្លួន",
-    "TV / Media": "ទូរទស្សន៍ / ប្រព័ន្ធផ្សព្វផ្សាយ",
-    "Books": "សៀវភៅ",
-    "Fan Page": "Page អ្នកគាំទ្រ",
-    "E-commerce": "ពាណិជ្ជកម្មអេឡិចត្រូនិក",
-    "Art": "សិល្បៈ",
-    "Photography": "ការថតរូប",
-    "Health": "សុខភាព",
-    "Fitness": "ហាត់ប្រាណ",
-    "Kids": "កុមារ",
-    "Fashion": "ម៉ូដ",
+    "ប្រភេទផេករឿងសម្រាយ": "🎬 ប្រភេទផេករឿងសម្រាយ",
+    "ប្រភេទផេក PE": "📈 ប្រភេទផេក PE",
 }
 
 
