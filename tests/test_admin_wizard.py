@@ -1711,6 +1711,64 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 db.DB_PATH = old_path
 
+    async def test_ready_transfer_accepts_visible_labels_and_text_fallback(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder:
+            db.DB_PATH = str(Path(folder) / "ready-transfer-text.db")
+            try:
+                db.init_db()
+                for text, expected in (
+                    ("✅ បាទ / Yes", 1),
+                    ("❌ ទេ / No", 0),
+                    ("Yes", 1),
+                    ("No", 0),
+                ):
+                    context = self._ready_transfer_context()
+                    message = SimpleNamespace(
+                        text=text, photo=None, reply_text=AsyncMock()
+                    )
+                    await handle_text(
+                        SimpleNamespace(
+                            effective_user=SimpleNamespace(id=619658883),
+                            message=message,
+                        ),
+                        context,
+                    )
+                    self.assertEqual(
+                        context.user_data["draft"]["ready_transfer"], expected
+                    )
+                    self.assertEqual(
+                        context.user_data["admin_step"], "business_ready"
+                    )
+                    self.assertIn(
+                        "14/16 Business Ready",
+                        message.reply_text.await_args.args[0],
+                    )
+
+                context = self._ready_transfer_context()
+                message = SimpleNamespace(
+                    text="maybe", photo=None, reply_text=AsyncMock()
+                )
+                await handle_text(
+                    SimpleNamespace(
+                        effective_user=SimpleNamespace(id=619658883),
+                        message=message,
+                    ),
+                    context,
+                )
+                self.assertEqual(
+                    context.user_data["admin_step"], "ready_transfer"
+                )
+                self.assertNotIn(
+                    "ready_transfer", context.user_data["draft"]
+                )
+                self.assertIn(
+                    "Please choose",
+                    message.reply_text.await_args.args[0],
+                )
+            finally:
+                db.DB_PATH = old_path
+
     async def test_ready_transfer_back_and_cancel_navigation(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder:

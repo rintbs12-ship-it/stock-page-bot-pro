@@ -161,6 +161,22 @@ WIZARD_PROMPTS = {
     "status": "🛠️ Add Stock Wizard\n\n16/16 Status",
 }
 
+BOOLEAN_WIZARD_NEXT_STEPS = {
+    "real_followers": "organic_reach",
+    "monetized": "no_violation",
+    "no_violation": "ready_transfer",
+    "ready_transfer": "business_ready",
+    "business_ready": "fb_link",
+}
+
+BOOLEAN_WIZARD_INPUTS = {
+    "✅ បាទ / Yes": 1,
+    "❌ ទេ / No": 0,
+    "Yes": 1,
+    "No": 0,
+}
+
+
 def is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
@@ -187,6 +203,18 @@ def _wizard_is_valid(context, expected_step=None):
         return False
     step_index = WIZARD_STEPS.index(step)
     return all(field in draft for field in WIZARD_STEPS[:step_index])
+
+
+def _advance_boolean_wizard(context, field, value):
+    if (
+        field not in BOOLEAN_WIZARD_NEXT_STEPS
+        or value not in {0, 1}
+        or not _wizard_is_valid(context, field)
+    ):
+        return False
+    context.user_data["draft"][field] = value
+    context.user_data["admin_step"] = BOOLEAN_WIZARD_NEXT_STEPS[field]
+    return True
 
 
 def _wizard_keyboard(step):
@@ -1445,22 +1473,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("admin:wizard:bool:"):
-        _, _, _, field, raw_value = data.split(":")
-        next_steps = {
-            "real_followers": "organic_reach",
-            "monetized": "no_violation",
-            "no_violation": "ready_transfer",
-            "ready_transfer": "business_ready",
-        }
-        if field not in {*next_steps, "business_ready"} or not _wizard_is_valid(
-            context, field
-        ):
+        parts = data.split(":")
+        if len(parts) != 5 or parts[4] not in {"0", "1"}:
             return await _recover_invalid_wizard(query, context, uid, edit=True)
-        context.user_data["draft"][field] = int(raw_value)
-        if field == "business_ready":
-            context.user_data["admin_step"] = "fb_link"
-        else:
-            context.user_data["admin_step"] = next_steps[field]
+        field, raw_value = parts[3], parts[4]
+        if not _advance_boolean_wizard(context, field, int(raw_value)):
+            return await _recover_invalid_wizard(query, context, uid, edit=True)
         await _render_wizard_prompt(query, context, edit=True)
         return
 
@@ -1880,12 +1898,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        if context.user_data.get("admin_step") in {
-            "real_followers", "monetized", "no_violation",
-            "ready_transfer", "business_ready",
-        }:
+        if context.user_data.get("admin_step") in BOOLEAN_WIZARD_NEXT_STEPS:
+            field = context.user_data["admin_step"]
+            value = BOOLEAN_WIZARD_INPUTS.get(text)
+            if value is not None and _advance_boolean_wizard(
+                context, field, value
+            ):
+                await _render_wizard_prompt(update.message, context)
+                return
             await _render_wizard_prompt(
-                update.message, context, text="Please use Yes or No."
+                update.message,
+                context,
+                text=(
+                    "Please choose ✅ បាទ / Yes or ❌ ទេ / No. "
+                    "You can also send Yes or No."
+                ),
             )
             return
 
