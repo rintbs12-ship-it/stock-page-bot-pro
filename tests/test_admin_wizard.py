@@ -95,7 +95,13 @@ from health import start_health_server
 
 class AdminWizardTests(unittest.TestCase):
     def test_production_main_provides_ptb_22_current_event_loop(self):
-        app = SimpleNamespace(run_polling=Mock())
+        app = SimpleNamespace(run_polling=Mock(), bot_data={})
+        socket = SimpleNamespace(getsockname=Mock(return_value=("0.0.0.0", 10000)))
+        health_server = SimpleNamespace(
+            sockets=[socket],
+            close=Mock(),
+            wait_closed=AsyncMock(),
+        )
 
         def verify_polling_loop(**kwargs):
             loop = asyncio.get_event_loop()
@@ -111,10 +117,16 @@ class AdminWizardTests(unittest.TestCase):
             patch.object(bot, "add_demo_stock_if_empty"),
             patch.object(bot, "run_due_auto_backup", return_value=None),
             patch.object(bot, "build_application", return_value=app),
+            patch.object(
+                bot, "start_health_server",
+                new=AsyncMock(return_value=health_server),
+            ),
         ):
             bot.main()
 
         app.run_polling.assert_called_once()
+        health_server.close.assert_called_once()
+        health_server.wait_closed.assert_awaited_once()
 
     def _create_analytics_fixture(self):
         db.init_db()

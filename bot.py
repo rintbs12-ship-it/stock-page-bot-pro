@@ -70,11 +70,6 @@ def _log_background_task_result(task):
 
 
 async def post_init(app):
-    health_server = await start_health_server()
-    app.bot_data[HEALTH_SERVER_KEY] = health_server
-    health_port = health_server.sockets[0].getsockname()[1]
-    LOGGER.info("Health server listening on 0.0.0.0:%s", health_port)
-
     tasks = [
         asyncio.create_task(
             notification_scheduler(app.bot),
@@ -91,6 +86,13 @@ async def post_init(app):
     LOGGER.info("%s v%s startup completed", PRODUCT_NAME, __version__)
 
 
+async def _close_health_server(app):
+    health_server = app.bot_data.pop(HEALTH_SERVER_KEY, None)
+    if health_server is not None:
+        health_server.close()
+        await health_server.wait_closed()
+
+
 async def post_shutdown(app):
     tasks = app.bot_data.pop(BACKGROUND_TASKS_KEY, [])
     for task in tasks:
@@ -98,10 +100,7 @@ async def post_shutdown(app):
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    health_server = app.bot_data.pop(HEALTH_SERVER_KEY, None)
-    if health_server is not None:
-        health_server.close()
-        await health_server.wait_closed()
+    await _close_health_server(app)
     LOGGER.info("%s shutdown completed", PRODUCT_NAME)
 
 
@@ -154,11 +153,18 @@ def main():
         # loop and remains the sole owner of the application polling lifecycle.
         with asyncio.Runner() as runner:
             runner.get_loop()
-            app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                bootstrap_retries=-1,
-                close_loop=False,
-            )
+            health_server = runner.run(start_health_server())
+            app.bot_data[HEALTH_SERVER_KEY] = health_server
+            health_port = health_server.sockets[0].getsockname()[1]
+            LOGGER.info("Health server listening on 0.0.0.0:%s", health_port)
+            try:
+                app.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    bootstrap_retries=-1,
+                    close_loop=False,
+                )
+            finally:
+                runner.run(_close_health_server(app))
     except KeyboardInterrupt:
         LOGGER.info("Stock Page Bot stopped")
     except Exception:
