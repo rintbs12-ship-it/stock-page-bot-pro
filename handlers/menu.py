@@ -1581,7 +1581,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Send as many photos as needed. Send /done when finished."
         )
         await query.message.reply_text(
-            "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /done ដើម្បីបញ្ចប់។",
+            "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /រួចរាល់ ដើម្បីបញ្ចប់។",
             reply_markup=photo_upload_reply_keyboard(),
         )
         return
@@ -1644,7 +1644,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📷 Now send as many photos as needed. Send /done when finished.",
         )
         await query.message.reply_text(
-            "សូមផ្ញើរូបភាព ឬចុច ✅ /done ដើម្បីបញ្ចប់។",
+            "សូមផ្ញើរូបភាព ឬចុច ✅ /រួចរាល់ ដើម្បីបញ្ចប់។",
             reply_markup=photo_upload_reply_keyboard(),
         )
         return
@@ -1661,6 +1661,9 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     stock_id = get_photo_upload_session(user_id) if is_admin(user_id) else None
     if stock_id:
+        photo_count = context.user_data.get("photo_count")
+        if photo_count is None:
+            photo_count = len(get_stock_photos(stock_id))
         clear_photo_upload_session(user_id)
         if consume_pending_stock_notification(stock_id):
             row = get_stock(stock_id)
@@ -1685,13 +1688,17 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except TelegramError:
                         continue
+        context.user_data.pop("waiting_for_photos", None)
+        if getattr(context, "chat_data", None) is not None:
+            context.chat_data.pop("waiting_for_photos", None)
         context.user_data.clear()
         await update.message.reply_text(
-            "ចុច 🚀 /start ដើម្បីត្រឡប់ទៅម៉ឺនុយដើម។",
+            "✅ បានបន្ថែមរូបភាពដោយជោគជ័យ\n"
+            f"📷 បានបន្ថែម {photo_count} រូបភាព",
             reply_markup=start_reply_keyboard(),
         )
         await update.message.reply_text(
-            "✅ Stock created successfully.",
+            "👑 ផ្ទាំងគ្រប់គ្រង Admin",
             reply_markup=admin_home(),
         )
         return
@@ -1706,7 +1713,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🚀 /start":
         return await start(update, context)
 
-    if text == "✅ /done":
+    if text in {"/done", "/រួចរាល់", "✅ /រួចរាល់", "✅ /done"}:
         return await handle_command(update, context)
 
     if text in {"❌ Cancel", "❌ បោះបង់"} and context.user_data.get(
@@ -1813,7 +1820,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = len(get_stock_photos(stock_id))
         await update.message.reply_text(
             f"✅ រក្សាទុករូបភាពបានជោគជ័យ ({total} សរុប)។ "
-            "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /done ដើម្បីបញ្ចប់។",
+            "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /រួចរាល់ ដើម្បីបញ្ចប់។",
             reply_markup=photo_upload_reply_keyboard(),
         )
         return
@@ -1900,7 +1907,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("admin_mode"):
         if context.user_data.get("admin_mode") == "upload_photos":
             await update.message.reply_text(
-                "Send a photo, or send /done to finish uploading."
+                "សូមផ្ញើរូបភាពបន្ថែម ឬចុច ✅ /រួចរាល់ ដើម្បីបញ្ចប់។",
+                reply_markup=photo_upload_reply_keyboard(),
             )
             return
 

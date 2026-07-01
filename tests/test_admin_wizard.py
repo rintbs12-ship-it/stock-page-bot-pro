@@ -3086,8 +3086,9 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(db.get_stock_photos(stock_id), ["telegram-file-id"])
                 self.assertIsNone(db.get_photo_upload_session(619658883))
                 self.assertEqual(
-                    update.message.reply_text.await_args.args[0],
-                    "✅ Stock created successfully.",
+                    update.message.reply_text.await_args_list[0].args[0],
+                    "✅ បានបន្ថែមរូបភាពដោយជោគជ័យ\n"
+                    "📷 បានបន្ថែម 1 រូបភាព",
                 )
             finally:
                 db.DB_PATH = old_path
@@ -3124,14 +3125,14 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     for button in row
                 }
                 self.assertEqual(labels, {
-                    "✅ /done", "🚀 /start", "❌ បោះបង់",
+                    "✅ /រួចរាល់", "🚀 /start", "❌ បោះបង់",
                 })
                 self.assertEqual(
                     db.get_stock_photos(stock_id), ["photo-button-file"]
                 )
 
                 done_message = SimpleNamespace(
-                    text="✅ /done", photo=None, reply_text=AsyncMock()
+                    text="✅ /រួចរាល់", photo=None, reply_text=AsyncMock()
                 )
                 await handle_text(
                     SimpleNamespace(
@@ -3149,6 +3150,31 @@ class AddStockWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     start_markup.keyboard[0][0].text, "🚀 /start"
                 )
+                self.assertEqual(
+                    done_message.reply_text.await_args_list[0].args[0],
+                    "✅ បានបន្ថែមរូបភាពដោយជោគជ័យ\n"
+                    "📷 បានបន្ថែម 1 រូបភាព",
+                )
+                self.assertNotIn("waiting_for_photos", context.user_data)
+                self.assertNotIn("waiting_for_photos", context.chat_data)
+
+                for finish_text in ("/done", "/រួចរាល់", "✅ /done"):
+                    begin_photo_upload(context, 619658883, stock_id)
+                    context.user_data["waiting_for_photos"] = True
+                    context.chat_data["waiting_for_photos"] = True
+                    finish_message = SimpleNamespace(
+                        text=finish_text, photo=None, reply_text=AsyncMock()
+                    )
+                    await handle_text(
+                        SimpleNamespace(
+                            effective_user=SimpleNamespace(id=619658883),
+                            message=finish_message,
+                        ),
+                        context,
+                    )
+                    self.assertIsNone(db.get_photo_upload_session(619658883))
+                    self.assertEqual(context.user_data, {})
+                    self.assertNotIn("waiting_for_photos", context.chat_data)
 
                 begin_photo_upload(context, 619658883, stock_id)
                 cancel_message = SimpleNamespace(

@@ -69,7 +69,7 @@ def start_reply_keyboard():
 def photo_upload_reply_keyboard():
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("✅ /done"), KeyboardButton("🚀 /start")],
+            [KeyboardButton("✅ /រួចរាល់"), KeyboardButton("🚀 /start")],
             [KeyboardButton("❌ បោះបង់")],
         ],
         resize_keyboard=True,
