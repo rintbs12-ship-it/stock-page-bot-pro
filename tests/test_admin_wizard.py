@@ -109,21 +109,20 @@ from health import start_health_server
 
 
 class AdminWizardTests(unittest.TestCase):
-    def test_render_sqlite_fallback_forces_persistent_disk_path(self):
+    def test_render_sqlite_uses_explicit_db_path(self):
         environment = {
             "RENDER": "true",
             "DATABASE_URL": "",
-            "DB_PATH": "database.db",
+            "DB_PATH": "custom/database.db",
         }
         self.assertTrue(config.is_render_environment(environment))
         self.assertEqual(
             config.resolve_db_path(environment),
-            "/var/data/database.db",
+            "custom/database.db",
         )
 
-    def test_local_sqlite_fallback_keeps_local_database_path(self):
-        environment = {"DATABASE_URL": "", "DB_PATH": ""}
-        self.assertFalse(config.is_render_environment(environment))
+    def test_sqlite_fallback_uses_local_path_when_db_path_missing(self):
+        environment = {"RENDER": "true", "DATABASE_URL": "", "DB_PATH": ""}
         self.assertEqual(config.resolve_db_path(environment), "database.db")
 
     def test_sqlite_fallback_without_database_url(self):

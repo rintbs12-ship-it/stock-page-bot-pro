@@ -36,7 +36,7 @@ local SQLite. Schema creation and safe additive migrations run at startup.
 | `TELEGRAM_CONTACT` | No | Public Telegram contact URL |
 | `FACEBOOK_CONTACT` | No | Public Facebook page URL |
 | `DATABASE_URL` | Production | PostgreSQL URL; enables persistent PostgreSQL |
-| `DB_PATH` | Render SQLite | Must be `/var/data/database.db`; local development defaults to `database.db` |
+| `DB_PATH` | No | Optional SQLite path; defaults to `./database.db` |
 | `IMAGE_DIR` | No | Optional local image directory |
 | `PORT` | On Render | Health server port; defaults to `10000` |
 
@@ -58,22 +58,11 @@ with BotFather before deployment.
 `DATABASE_URL` takes priority over `DB_PATH`. `DB_PATH` remains the local
 SQLite fallback. Run only one polling instance for each Telegram bot token.
 
-### Render SQLite persistent disk
-
-When `DATABASE_URL` is not configured, attach a Render Persistent Disk at
-`/var/data` and set:
-
-```text
-DB_PATH=/var/data/database.db
-```
-
-The bot also detects Render's `RENDER=true` environment and forces SQLite to
-`/var/data/database.db`, so it can never silently fall back to the ephemeral
-application path `./database.db` on Render. **Deploy latest commit is safe only
-when the persistent disk is mounted and `DB_PATH=/var/data/database.db`.**
-Startup logs report the selected backend, exact SQLite path, file existence,
-and row counts for stocks, settings, users, orders, and photos. Production
-startup never copies a bundled database or inserts demo stocks.
+Database selection always follows this order: `DATABASE_URL`, then `DB_PATH`,
+then local `./database.db`. No hosting-specific filesystem path is created
+unless it is explicitly supplied through `DB_PATH`. Startup logs report the
+selected backend, exact SQLite path, file existence, and row counts for stocks,
+settings, users, orders, and photos.
 
 ### Migrating existing SQLite data
 
