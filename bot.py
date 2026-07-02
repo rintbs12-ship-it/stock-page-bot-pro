@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import (
@@ -12,10 +13,12 @@ from telegram.ext import (
     TypeHandler,
     filters,
 )
-from config import BOT_TOKEN
+from config import BOT_TOKEN, DB_PATH, is_render_environment
 from database.db import (
     add_demo_stock_if_empty,
     add_maintenance_run,
+    database_backend,
+    database_startup_diagnostics,
     init_db,
     is_admin_user,
     is_telegram_user_blocked,
@@ -211,13 +214,32 @@ def main():
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         level=logging.INFO,
     )
+    sqlite_file_existed = (
+        database_backend() == "sqlite"
+        and Path(DB_PATH).is_file()
+    )
     init_db()
+    diagnostics = database_startup_diagnostics()
+    LOGGER.info(
+        "Database startup: backend=%s path=%s existed_before_startup=%s "
+        "exists_now=%s counts=%s",
+        diagnostics["backend"],
+        diagnostics["path"] or "(DATABASE_URL)",
+        sqlite_file_existed if diagnostics["backend"] == "sqlite" else "n/a",
+        diagnostics["exists"],
+        diagnostics["counts"],
+    )
     report = verify_database()
     LOGGER.info(
         "Database verified: integrity=%s, foreign_key_errors=%d",
         report["integrity"], len(report["foreign_key_errors"]),
     )
-    add_demo_stock_if_empty()
+    if (
+        diagnostics["backend"] == "sqlite"
+        and not is_render_environment()
+        and not sqlite_file_existed
+    ):
+        add_demo_stock_if_empty()
     try:
         automatic_backup = run_due_auto_backup()
         if automatic_backup:

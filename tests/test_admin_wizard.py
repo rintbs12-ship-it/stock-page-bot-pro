@@ -13,6 +13,7 @@ from telegram.error import Forbidden, TelegramError
 from telegram.ext import ApplicationHandlerStop, ConversationHandler
 
 import bot
+import config
 from localization import translate_reply_markup, translate_ui_text
 from database import db
 from handlers import backup
@@ -108,6 +109,23 @@ from health import start_health_server
 
 
 class AdminWizardTests(unittest.TestCase):
+    def test_render_sqlite_fallback_forces_persistent_disk_path(self):
+        environment = {
+            "RENDER": "true",
+            "DATABASE_URL": "",
+            "DB_PATH": "database.db",
+        }
+        self.assertTrue(config.is_render_environment(environment))
+        self.assertEqual(
+            config.resolve_db_path(environment),
+            "/var/data/database.db",
+        )
+
+    def test_local_sqlite_fallback_keeps_local_database_path(self):
+        environment = {"DATABASE_URL": "", "DB_PATH": ""}
+        self.assertFalse(config.is_render_environment(environment))
+        self.assertEqual(config.resolve_db_path(environment), "database.db")
+
     def test_sqlite_fallback_without_database_url(self):
         old_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as folder, patch.dict(
@@ -189,6 +207,17 @@ class AdminWizardTests(unittest.TestCase):
         app.run_polling.side_effect = verify_polling_loop
         with (
             patch.object(bot, "init_db"),
+            patch.object(bot, "database_backend", return_value="sqlite"),
+            patch.object(bot, "database_startup_diagnostics", return_value={
+                "backend": "sqlite",
+                "path": "database.db",
+                "exists": True,
+                "counts": {
+                    "stocks": 1, "settings": 1, "users": 1,
+                    "orders": 1, "photos": 1,
+                },
+            }),
+            patch.object(bot, "is_render_environment", return_value=False),
             patch.object(bot, "verify_database", return_value={
                 "integrity": "ok", "foreign_key_errors": [],
             }),

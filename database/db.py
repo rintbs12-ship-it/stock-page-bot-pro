@@ -3,6 +3,7 @@ import re
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from config import ADMIN_IDS, DB_PATH
 
 
@@ -240,10 +241,40 @@ def connect():
             )
             _POSTGRES_POOL_URL = database_url
         return _PostgresConnection(_POSTGRES_POOL.getconn(), _POSTGRES_POOL)
-    con = sqlite3.connect(DB_PATH, timeout=10)
+    database_path = Path(DB_PATH)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(database_path), timeout=10)
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=10000")
     return con
+
+
+def database_startup_diagnostics():
+    backend = database_backend()
+    result = {
+        "backend": backend,
+        "path": str(Path(DB_PATH).resolve()) if backend == "sqlite" else "",
+        "exists": Path(DB_PATH).is_file() if backend == "sqlite" else None,
+        "counts": {},
+    }
+    table_names = {
+        "stocks": "stocks",
+        "settings": "app_settings",
+        "users": "telegram_users",
+        "orders": "orders",
+        "photos": "stock_photos",
+    }
+    con = connect()
+    try:
+        for label, table in table_names.items():
+            try:
+                row = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+                result["counts"][label] = int(row[0])
+            except Exception:
+                result["counts"][label] = None
+    finally:
+        con.close()
+    return result
 
 
 def _table_columns(con, table):
