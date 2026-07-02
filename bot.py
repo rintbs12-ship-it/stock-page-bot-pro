@@ -167,6 +167,7 @@ async def _close_health_server(app):
 
 
 async def post_shutdown(app):
+    LOGGER.info("Polling shutdown started")
     tasks = app.bot_data.pop(BACKGROUND_TASKS_KEY, [])
     for task in tasks:
         task.cancel()
@@ -175,6 +176,13 @@ async def post_shutdown(app):
 
     await _close_health_server(app)
     LOGGER.info("%s shutdown completed", PRODUCT_NAME)
+
+
+async def prepare_polling(app):
+    LOGGER.info("Initializing Telegram polling application")
+    await app.initialize()
+    await app.bot.delete_webhook(drop_pending_updates=False)
+    LOGGER.info("Telegram webhook cleared; pending updates preserved")
 
 
 def build_application():
@@ -258,11 +266,19 @@ def main():
             health_port = health_server.sockets[0].getsockname()[1]
             LOGGER.info("Health server listening on 0.0.0.0:%s", health_port)
             try:
+                try:
+                    runner.run(prepare_polling(app))
+                except Exception:
+                    LOGGER.exception("Polling preparation failed; shutting down")
+                    runner.run(app.shutdown())
+                    raise
+                LOGGER.info("Starting Telegram polling lifecycle")
                 app.run_polling(
                     allowed_updates=Update.ALL_TYPES,
                     bootstrap_retries=-1,
                     close_loop=False,
                 )
+                LOGGER.info("Telegram polling lifecycle stopped cleanly")
             finally:
                 runner.run(_close_health_server(app))
     except KeyboardInterrupt:

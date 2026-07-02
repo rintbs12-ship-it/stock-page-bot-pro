@@ -190,7 +190,13 @@ class AdminWizardTests(unittest.TestCase):
         self.assertTrue(any("ប្រូម៉ូសិន" in label for label in translated_labels))
 
     def test_production_main_provides_ptb_22_current_event_loop(self):
-        app = SimpleNamespace(run_polling=Mock(), bot_data={})
+        telegram_bot = SimpleNamespace(delete_webhook=AsyncMock())
+        app = SimpleNamespace(
+            run_polling=Mock(),
+            initialize=AsyncMock(),
+            bot=telegram_bot,
+            bot_data={},
+        )
         socket = SimpleNamespace(getsockname=Mock(return_value=("0.0.0.0", 10000)))
         health_server = SimpleNamespace(
             sockets=[socket],
@@ -231,6 +237,10 @@ class AdminWizardTests(unittest.TestCase):
             bot.main()
 
         app.run_polling.assert_called_once()
+        app.initialize.assert_awaited_once()
+        telegram_bot.delete_webhook.assert_awaited_once_with(
+            drop_pending_updates=False
+        )
         health_server.close.assert_called_once()
         health_server.wait_closed.assert_awaited_once()
 
