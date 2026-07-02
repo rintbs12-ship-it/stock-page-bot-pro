@@ -1,6 +1,7 @@
 import sqlite3
 import re
 import json
+import os
 from datetime import datetime
 from config import ADMIN_IDS, DB_PATH
 
@@ -19,6 +20,201 @@ DEFAULT_MENU_ITEMS = (
 
 _SETTING_CACHE = {}
 _ADMIN_CACHE = {}
+_POSTGRES_POOL = None
+_POSTGRES_POOL_URL = ""
+
+_SERIAL_KEYS = {
+    "audit_logs": "id",
+    "backup_logs": "id",
+    "broadcasts": "broadcast_id",
+    "customer_profiles": "customer_id",
+    "maintenance_runs": "id",
+    "order_receipts": "id",
+    "order_status_history": "history_id",
+    "orders": "order_id",
+    "payment_logs": "id",
+    "recent_searches": "id",
+    "saved_filters": "id",
+    "scheduled_jobs": "id",
+    "stock_photos": "id",
+    "stocks": "id",
+}
+
+
+def get_database_url():
+    return os.getenv("DATABASE_URL", "").strip()
+
+
+def database_backend():
+    return "postgresql" if get_database_url() else "sqlite"
+
+
+def _database_cache_namespace():
+    return get_database_url() or DB_PATH
+
+
+def _postgres_sql(sql):
+    sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    sql = re.sub(r"(\b[A-Za-z_]\w*_id\s+)INTEGER\b", r"\1BIGINT", sql)
+    sql = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", sql, flags=re.I)
+    sql = sql.replace(" COLLATE NOCASE", "")
+    sql = re.sub(
+        r"datetime\('now',\s*'localtime',\s*'start of day'\)",
+        "TO_CHAR(date_trunc('day', NOW()), 'YYYY-MM-DD HH24:MI:SS')",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(
+        r"datetime\('now',\s*'localtime',\s*'-7 days'\)",
+        "TO_CHAR(NOW() - INTERVAL '7 days', 'YYYY-MM-DD HH24:MI:SS')",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(
+        r"datetime\('now',\s*'localtime',\s*'-30 days'\)",
+        "TO_CHAR(NOW() - INTERVAL '30 days', 'YYYY-MM-DD HH24:MI:SS')",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(
+        r"datetime\('now',\s*'localtime',\s*\?\)",
+        "TO_CHAR(NOW() + CAST(? AS interval), 'YYYY-MM-DD HH24:MI:SS')",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(
+        r"datetime\('now'\)",
+        "TO_CHAR(NOW(), 'YYYY-MM-DD HH24:MI:SS')",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(
+        r"\bdate\(([A-Za-z_][\w.]*)\)",
+        r"CAST(\1 AS date)",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(r"\bdate\(\?\)", "CAST(? AS date)", sql, flags=re.I)
+    sql = sql.replace("cleaned GLOB '*[0-9]*'", "cleaned ~ '[0-9]'")
+    sql = sql.replace(
+        "cleaned NOT GLOB '*[^0-9.]*'", "cleaned !~ '[^0-9.]'"
+    )
+    sql = sql.replace("value GLOB '*[0-9]*'", "value ~ '[0-9]'")
+    sql = sql.replace(
+        "value NOT GLOB '*[^0-9.]*'", "value !~ '[^0-9.]'"
+    )
+    sql = re.sub(
+        r"SUM\(\s*status='available'\s*\)",
+        "SUM(CASE WHEN status='available' THEN 1 ELSE 0 END)",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(
+        r"SUM\(\s*(?!CASE\b)([^()]+(?:=|<>|<=|>=|<|>)[^()]*)\)",
+        r"SUM(CASE WHEN \1 THEN 1 ELSE 0 END)",
+        sql,
+        flags=re.I,
+    )
+    sql = re.sub(
+        r"SUM\(LOWER\(TRIM\(country\)\)='([^']+)'\)",
+        r"SUM(CASE WHEN LOWER(TRIM(country))='\1' THEN 1 ELSE 0 END)",
+        sql,
+        flags=re.I,
+    )
+    sql = sql.replace("?", "%s")
+    return sql
+
+
+class _PostgresCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.lastrowid = None
+        self._buffer = None
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    def execute(self, sql, params=()):
+        stripped = sql.strip()
+        if stripped.upper().startswith("PRAGMA "):
+            self._buffer = []
+            return self
+        if stripped.upper().startswith("CREATE TRIGGER "):
+            self._buffer = []
+            return self
+        original_or_ignore = bool(re.search(
+            r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", sql, flags=re.I
+        ))
+        match = re.match(
+            r"\s*INSERT(?:\s+OR\s+IGNORE)?\s+INTO\s+([A-Za-z_][\w]*)",
+            sql,
+            flags=re.I,
+        )
+        transformed = _postgres_sql(sql)
+        if original_or_ignore and "ON CONFLICT" not in transformed.upper():
+            transformed = transformed.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        serial_key = _SERIAL_KEYS.get(match.group(1).lower()) if match else None
+        if serial_key and "RETURNING" not in transformed.upper():
+            transformed = transformed.rstrip().rstrip(";") + f" RETURNING {serial_key}"
+        self._cursor.execute(transformed, tuple(params or ()))
+        self._buffer = None
+        if serial_key:
+            returned = self._cursor.fetchall()
+            self.lastrowid = returned[-1][0] if returned else None
+            self._buffer = []
+        return self
+
+    def executemany(self, sql, params):
+        original_or_ignore = bool(re.search(
+            r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", sql, flags=re.I
+        ))
+        transformed = _postgres_sql(sql)
+        if original_or_ignore and "ON CONFLICT" not in transformed.upper():
+            transformed = transformed.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        self._cursor.executemany(transformed, params)
+        self._buffer = None
+        return self
+
+    def fetchone(self):
+        if self._buffer is not None:
+            return self._buffer.pop(0) if self._buffer else None
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        if self._buffer is not None:
+            rows, self._buffer = self._buffer, []
+            return rows
+        return self._cursor.fetchall()
+
+    def close(self):
+        self._cursor.close()
+
+
+class _PostgresConnection:
+    def __init__(self, connection, pool):
+        self._connection = connection
+        self._pool = pool
+
+    def cursor(self):
+        return _PostgresCursor(self._connection.cursor())
+
+    def execute(self, sql, params=()):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        try:
+            from psycopg2.extensions import STATUS_READY
+            if self._connection.status != STATUS_READY:
+                self._connection.rollback()
+        finally:
+            self._pool.putconn(self._connection)
 
 
 def clear_runtime_caches():
@@ -27,10 +223,43 @@ def clear_runtime_caches():
 
 
 def connect():
+    global _POSTGRES_POOL, _POSTGRES_POOL_URL
+    database_url = get_database_url()
+    if database_url:
+        try:
+            from psycopg2.pool import ThreadedConnectionPool
+        except ImportError as exc:
+            raise RuntimeError(
+                "DATABASE_URL is set but psycopg2-binary is not installed."
+            ) from exc
+        if _POSTGRES_POOL is None or _POSTGRES_POOL_URL != database_url:
+            if _POSTGRES_POOL is not None:
+                _POSTGRES_POOL.closeall()
+            _POSTGRES_POOL = ThreadedConnectionPool(
+                1, 20, dsn=database_url
+            )
+            _POSTGRES_POOL_URL = database_url
+        return _PostgresConnection(_POSTGRES_POOL.getconn(), _POSTGRES_POOL)
     con = sqlite3.connect(DB_PATH, timeout=10)
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=10000")
     return con
+
+
+def _table_columns(con, table):
+    if database_backend() == "sqlite":
+        return {
+            row[1]
+            for row in con.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+    return {
+        row[0]
+        for row in con.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name=?
+        """, (table,)).fetchall()
+    }
 
 
 def init_db():
@@ -70,9 +299,7 @@ def init_db():
         "page_type": "TEXT",
         "price_display_mode": "TEXT NOT NULL DEFAULT 'both'",
     }
-    existing_columns = {
-        row[1] for row in cur.execute("PRAGMA table_info(stocks)").fetchall()
-    }
+    existing_columns = _table_columns(con, "stocks")
     for column, definition in required_stock_columns.items():
         if column not in existing_columns:
             cur.execute(f"ALTER TABLE stocks ADD COLUMN {column} {definition}")
@@ -203,9 +430,7 @@ def init_db():
         "cancelled_at": "TEXT DEFAULT ''",
         "rejection_reason": "TEXT DEFAULT ''",
     }
-    existing_order_columns = {
-        row[1] for row in cur.execute("PRAGMA table_info(orders)").fetchall()
-    }
+    existing_order_columns = _table_columns(con, "orders")
     for column, definition in required_order_columns.items():
         if column not in existing_order_columns:
             cur.execute(f"ALTER TABLE orders ADD COLUMN {column} {definition}")
@@ -385,10 +610,7 @@ def init_db():
         "updated_at": "TEXT DEFAULT ''",
         "phone": "TEXT DEFAULT ''",
     }
-    existing_customer_columns = {
-        row[1]
-        for row in cur.execute("PRAGMA table_info(customer_profiles)").fetchall()
-    }
+    existing_customer_columns = _table_columns(con, "customer_profiles")
     for column, definition in required_customer_columns.items():
         if column not in existing_customer_columns:
             cur.execute(
@@ -711,18 +933,37 @@ def verify_database():
     }
     con = connect()
     try:
-        integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
-        foreign_key_errors = con.execute("PRAGMA foreign_key_check").fetchall()
-        tables = {
-            row[0] for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
+        if database_backend() == "postgresql":
+            con.execute("SELECT 1").fetchone()
+            integrity = "ok"
+            foreign_key_errors = []
+            tables = {
+                row[0] for row in con.execute("""
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema='public'
+                """).fetchall()
+            }
+            indexes = {
+                row[0] for row in con.execute("""
+                    SELECT indexname FROM pg_indexes
+                    WHERE schemaname='public'
+                """).fetchall()
+            }
+        else:
+            integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_key_errors = con.execute(
+                "PRAGMA foreign_key_check"
             ).fetchall()
-        }
-        indexes = {
-            row[0] for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
-            ).fetchall()
-        }
+            tables = {
+                row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            indexes = {
+                row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
     finally:
         con.close()
     missing_tables = sorted(required_tables - tables)
@@ -1406,7 +1647,7 @@ def set_user_language(user_id, language):
 
 
 def get_setting(key, default=""):
-    cache_key = (DB_PATH, str(key))
+    cache_key = (_database_cache_namespace(), str(key))
     if cache_key in _SETTING_CACHE:
         value = _SETTING_CACHE[cache_key]
         return default if value is None else value
@@ -1429,7 +1670,7 @@ def set_setting(key, value):
     """, (key, str(value)))
     con.commit()
     con.close()
-    _SETTING_CACHE[(DB_PATH, str(key))] = str(value)
+    _SETTING_CACHE[(_database_cache_namespace(), str(key))] = str(value)
 
 
 def get_all_settings():
@@ -1439,7 +1680,7 @@ def get_all_settings():
     settings = dict(cur.fetchall())
     con.close()
     for key, value in settings.items():
-        _SETTING_CACHE[(DB_PATH, key)] = value
+        _SETTING_CACHE[(_database_cache_namespace(), key)] = value
     return settings
 
 
@@ -1471,7 +1712,7 @@ def get_backup_logs(limit=50):
 
 
 def is_admin_user(user_id):
-    cache_key = (DB_PATH, int(user_id))
+    cache_key = (_database_cache_namespace(), int(user_id))
     if cache_key in _ADMIN_CACHE:
         return _ADMIN_CACHE[cache_key]
     con = connect()
@@ -1656,7 +1897,7 @@ def add_admin(user_id):
     )
     con.commit()
     con.close()
-    _ADMIN_CACHE[(DB_PATH, user_id)] = True
+    _ADMIN_CACHE[(_database_cache_namespace(), user_id)] = True
     return added
 
 
@@ -1674,7 +1915,7 @@ def remove_admin(user_id):
     )
     con.commit()
     con.close()
-    _ADMIN_CACHE[(DB_PATH, user_id)] = False
+    _ADMIN_CACHE[(_database_cache_namespace(), user_id)] = False
     return removed
 
 

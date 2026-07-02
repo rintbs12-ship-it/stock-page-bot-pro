@@ -6,7 +6,7 @@ analytics, automation, and administration bot.
 ## Requirements
 
 - Python 3.14
-- SQLite 3
+- PostgreSQL (Neon recommended) or SQLite 3 for local development
 - Telegram bot token from BotFather
 - `python-telegram-bot==22.3`
 
@@ -24,9 +24,8 @@ Edit `.env`, then start the application:
 python bot.py
 ```
 
-The bot initializes and migrates SQLite automatically, verifies database
-integrity and foreign keys, starts its health server, restores persistent jobs,
-and begins Telegram polling.
+When `DATABASE_URL` is set, the bot uses PostgreSQL. Otherwise it falls back to
+local SQLite. Schema creation and safe additive migrations run at startup.
 
 ## Environment variables
 
@@ -36,6 +35,7 @@ and begins Telegram polling.
 | `ADMIN_IDS` | Yes | Comma-separated bootstrap admin Telegram IDs |
 | `TELEGRAM_CONTACT` | No | Public Telegram contact URL |
 | `FACEBOOK_CONTACT` | No | Public Facebook page URL |
+| `DATABASE_URL` | Production | PostgreSQL URL; enables persistent PostgreSQL |
 | `DB_PATH` | No | SQLite path; defaults to `database.db` |
 | `IMAGE_DIR` | No | Optional local image directory |
 | `PORT` | On Render | Health server port; defaults to `10000` |
@@ -44,18 +44,38 @@ Never commit `.env` or a real bot token. Configure secrets in the hosting
 provider. If a token has ever appeared in Git history, revoke and regenerate it
 with BotFather before deployment.
 
-## Render deployment
+## Neon PostgreSQL and Render deployment
 
-The included `render.yaml` creates a Python web service with a persistent disk.
-
-1. Push the repository to a private Git provider.
-2. In Render, create a Blueprint from `render.yaml`.
-3. Set `BOT_TOKEN`, `ADMIN_IDS`, `TELEGRAM_CONTACT`, and `FACEBOOK_CONTACT`.
-4. Keep `DB_PATH=/var/data/database.db`.
+1. Create a project at [Neon](https://neon.tech/).
+2. Copy its pooled PostgreSQL connection string (`postgresql://...`). Keep
+   `sslmode=require` in the URL.
+3. In Render, open **Web Service → Environment** and add
+   `DATABASE_URL=<your Neon connection string>`.
+4. Set `BOT_TOKEN`, `ADMIN_IDS`, `TELEGRAM_CONTACT`, `FACEBOOK_CONTACT`, and
+   `PORT`.
 5. Deploy and confirm the `/` health check returns `OK`.
 
-A persistent disk is required. Without it, SQLite data and local backups are
-lost during redeployment. Run only one polling instance against a bot token.
+`DATABASE_URL` takes priority over `DB_PATH`. `DB_PATH` remains the local
+SQLite fallback. Run only one polling instance for each Telegram bot token.
+
+### Migrating existing SQLite data
+
+Stop the bot and make a copy of `database.db`. Deploy once with `DATABASE_URL`
+so the PostgreSQL schema is initialized, then migrate from a machine that can
+access the SQLite file and Neon:
+
+```bash
+pgloader --with "data only" --with "reset sequences" --on-error-stop \
+  sqlite:///absolute/path/database.db "$DATABASE_URL"
+```
+
+Use Neon's direct (non-pooled) connection string for this one-time import.
+The flags preserve the schema initialized by the bot, copy rows, and reset
+PostgreSQL sequences. Verify row counts for `stocks`,
+`orders`, `telegram_users`, `customer_profiles`, `payment_logs`,
+`stock_photos`, `app_settings`, and all remaining tables before switching
+production traffic. Retain the original SQLite backup until verification is
+complete.
 
 ## Customer workflow
 
@@ -125,6 +145,10 @@ recent searches, pagination, and CSV export.
 
 Open `Admin Panel → Backup Manager`.
 
+The in-bot ZIP restore workflow is for SQLite fallback databases. With
+PostgreSQL, use Neon point-in-time restore/branches or `pg_dump` and
+`pg_restore`; never upload a SQLite ZIP over PostgreSQL.
+
 - Create Backup writes `backup_YYYYMMDD_HHMMSS.zip`.
 - ZIP files contain `database.db`, `settings.json`, and `backup_info.json`.
 - Export Database creates a consistent SQLite snapshot.
@@ -138,8 +162,8 @@ restore.
 
 ## Production behavior
 
-- SQLite uses WAL, foreign keys, busy timeout, parameterized queries, and
-  workload indexes.
+- PostgreSQL uses `DATABASE_URL`, parameterized queries, foreign keys, and
+  workload indexes. SQLite fallback uses WAL and busy timeout.
 - Startup runs idempotent migrations plus integrity, schema, index, and foreign
   key verification.
 - Unexpected update errors receive a reference number, are logged in detail,

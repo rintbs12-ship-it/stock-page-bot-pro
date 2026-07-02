@@ -3,6 +3,7 @@ import tempfile
 import zipfile
 import asyncio
 import io
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,6 +108,46 @@ from health import start_health_server
 
 
 class AdminWizardTests(unittest.TestCase):
+    def test_sqlite_fallback_without_database_url(self):
+        old_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as folder, patch.dict(
+            os.environ, {"DATABASE_URL": ""}
+        ):
+            db.DB_PATH = str(Path(folder) / "sqlite-fallback.db")
+            try:
+                self.assertEqual(db.database_backend(), "sqlite")
+                db.init_db()
+                con = db.connect()
+                self.assertEqual(
+                    con.execute("SELECT 1").fetchone()[0], 1
+                )
+                con.close()
+                self.assertEqual(db.verify_database()["integrity"], "ok")
+            finally:
+                db.DB_PATH = old_path
+
+    def test_postgresql_database_url_detection_and_sql_translation(self):
+        url = (
+            "postgresql://stock_user:secret@example.neon.tech/"
+            "stockbot?sslmode=require"
+        )
+        with patch.dict(os.environ, {"DATABASE_URL": url}):
+            self.assertEqual(db.get_database_url(), url)
+            self.assertEqual(db.database_backend(), "postgresql")
+            translated = db._postgres_sql(
+                "INSERT OR IGNORE INTO stocks "
+                "(id, followers) VALUES (?, ?)"
+            )
+            self.assertIn("INSERT INTO stocks", translated)
+            self.assertIn("VALUES (%s, %s)", translated)
+            self.assertNotIn("OR IGNORE", translated)
+            self.assertEqual(
+                db._postgres_sql(
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT"
+                ),
+                "id BIGSERIAL PRIMARY KEY",
+            )
+
     def test_global_khmer_ui_translation_preserves_callbacks_and_emojis(self):
         translated = translate_ui_text(
             "✅ Information saved. Admin is processing your order."

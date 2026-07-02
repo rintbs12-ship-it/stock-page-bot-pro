@@ -17,6 +17,8 @@ services:
         sync: false
       - key: FACEBOOK_CONTACT
         sync: false
+      - key: DATABASE_URL
+        sync: false
       - key: DB_PATH
         value: /var/data/database.db
     disk:
